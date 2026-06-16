@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -12,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -20,6 +22,8 @@ import com.example.myapplication.data.models.Material
 import com.example.myapplication.data.models.WorkItem
 import com.example.myapplication.viewmodels.ProjectDetailViewModel
 import java.util.Locale
+
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,7 +37,6 @@ fun ProjectDetailScreen(
     val materialSearchQuery by viewModel.materialSearchQuery.collectAsState()
     val workSearchQuery by viewModel.workSearchQuery.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    val showDeleteConfirmation by viewModel.showDeleteConfirmation.collectAsState()
     val showMaterialDialog by viewModel.showMaterialDialog.collectAsState()
     val showWorkDialog by viewModel.showWorkDialog.collectAsState()
     val editingMaterial by viewModel.editingMaterial.collectAsState()
@@ -48,16 +51,10 @@ fun ProjectDetailScreen(
                         Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
                     }
                 },
-                actions = {
-                    IconButton(onClick = { viewModel.showDeleteConfirmation() }) {
-                        Icon(Icons.Default.Delete, contentDescription = "Удалить смету")
-                    }
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White,
-                    actionIconContentColor = Color.White
+                    navigationIconContentColor = Color.White
                 )
             )
         },
@@ -184,29 +181,7 @@ fun ProjectDetailScreen(
         }
     }
 
-    if (showDeleteConfirmation) {
-        AlertDialog(
-            onDismissRequest = { viewModel.hideDeleteConfirmation() },
-            title = { Text("Удалить смету") },
-            text = { Text("Вы уверены, что хотите удалить эту смету? Все материалы и работы будут удалены безвозвратно.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.deleteProject()
-                        navController.navigateUp()
-                    }
-                ) {
-                    Text("Удалить", color = Color.Red)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.hideDeleteConfirmation() }) {
-                    Text("Отмена")
-                }
-            }
-        )
-    }
-
+    // Диалог добавления/редактирования материала
     if (showMaterialDialog || editingMaterial != null) {
         val material = editingMaterial
         MaterialDialog(
@@ -230,6 +205,7 @@ fun ProjectDetailScreen(
         )
     }
 
+    // Диалог добавления/редактирования работы
     if (showWorkDialog || editingWorkItem != null) {
         val work = editingWorkItem
         WorkDialog(
@@ -352,10 +328,10 @@ fun MaterialDialog(
     onDismiss: () -> Unit,
     onSave: (String, Double, String, Double) -> Unit
 ) {
-    var name by remember { mutableStateOf(material?.name ?: "") }
-    var quantity by remember { mutableStateOf(material?.quantity?.toString() ?: "") }
-    var unit by remember { mutableStateOf(material?.unit ?: "шт") }
-    var price by remember { mutableStateOf(material?.unitPrice?.toString() ?: "") }
+    var name by remember(material) { mutableStateOf(material?.name ?: "") }
+    var quantity by remember(material) { mutableStateOf(material?.quantity?.toString() ?: "") }
+    var unit by remember(material) { mutableStateOf(material?.unit ?: "шт") }
+    var price by remember(material) { mutableStateOf(material?.unitPrice?.toString() ?: "") }
 
     val isEditMode = material != null
 
@@ -369,26 +345,32 @@ fun MaterialDialog(
                     onValueChange = { name = it },
                     label = { Text("Название*") },
                     modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
                     isError = name.isBlank()
                 )
                 OutlinedTextField(
                     value = quantity,
                     onValueChange = { quantity = it },
                     label = { Text("Количество*") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                 )
                 OutlinedTextField(
                     value = unit,
                     onValueChange = { unit = it },
                     label = { Text("Единица измерения") },
                     modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
                     placeholder = { Text("шт") }
                 )
                 OutlinedTextField(
                     value = price,
                     onValueChange = { price = it },
                     label = { Text("Цена за ед.*") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                 )
             }
         },
@@ -422,10 +404,10 @@ fun WorkDialog(
     onDismiss: () -> Unit,
     onSave: (String, Double, Double, Double) -> Unit
 ) {
-    var name by remember { mutableStateOf(workItem?.name ?: "") }
-    var hours by remember { mutableStateOf(workItem?.laborHours?.toString() ?: "") }
-    var rate by remember { mutableStateOf(workItem?.hourlyRate?.toString() ?: "") }
-    var materialCost by remember { mutableStateOf(workItem?.materialCost?.toString() ?: "") }
+    var name by remember(workItem) { mutableStateOf(workItem?.name ?: "") }
+    var hours by remember(workItem) { mutableStateOf(workItem?.laborHours?.toString() ?: "") }
+    var rate by remember(workItem) { mutableStateOf(workItem?.hourlyRate?.toString() ?: "") }
+    var materialCost by remember(workItem) { mutableStateOf(workItem?.materialCost?.toString() ?: "") }
 
     val isEditMode = workItem != null
 
@@ -439,25 +421,32 @@ fun WorkDialog(
                     onValueChange = { name = it },
                     label = { Text("Название работы*") },
                     modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
                     isError = name.isBlank()
                 )
                 OutlinedTextField(
                     value = hours,
                     onValueChange = { hours = it },
                     label = { Text("Часы работы") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                 )
                 OutlinedTextField(
                     value = rate,
                     onValueChange = { rate = it },
                     label = { Text("Ставка в час (₽)") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                 )
                 OutlinedTextField(
                     value = materialCost,
                     onValueChange = { materialCost = it },
                     label = { Text("Стоимость материалов (₽)") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                 )
             }
         },

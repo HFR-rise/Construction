@@ -18,8 +18,12 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.myapplication.data.models.Contact
+import com.example.myapplication.data.models.ContactMethod
 import com.example.myapplication.viewmodels.ContactsViewModel
 import com.example.myapplication.viewmodels.SearchFilter
+
+// Импортируем функции из ContactsScreen
+// Если они там не экспортированы, нужно сделать их public или продублировать с другим именем
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,6 +43,25 @@ fun ContactSelectorDialog(
     var selectedContactForInfo by remember { mutableStateOf<Contact?>(null) }
     var editingContact by remember { mutableStateOf<Contact?>(null) }
     var selectedDuplicateContact by remember { mutableStateOf<Contact?>(null) }
+
+    var contactMethods by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
+    var duplicateMethods by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
+
+    LaunchedEffect(selectedContactForInfo) {
+        if (selectedContactForInfo != null) {
+            viewModel.getContactMethods(selectedContactForInfo!!.id).collect { methods ->
+                contactMethods = methods
+            }
+        }
+    }
+
+    LaunchedEffect(selectedDuplicateContact) {
+        if (selectedDuplicateContact != null) {
+            viewModel.getContactMethods(selectedDuplicateContact!!.id).collect { methods ->
+                duplicateMethods = methods
+            }
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -75,7 +98,7 @@ fun ContactSelectorDialog(
                                     value = searchQuery,
                                     onValueChange = { viewModel.updateSearchQuery(it) },
                                     modifier = Modifier.weight(1f),
-                                    placeholder = { Text(getFilterDisplayName(currentFilter)) },
+                                    placeholder = { Text(getFilterDisplayNameForSelector(currentFilter)) },
                                     singleLine = true,
                                     colors = TextFieldDefaults.colors(
                                         focusedContainerColor = MaterialTheme.colorScheme.surface,
@@ -85,7 +108,10 @@ fun ContactSelectorDialog(
                                     )
                                 )
                                 IconButton(onClick = { showFilterMenu = true }) {
-                                    Icon(getFilterIcon(currentFilter), contentDescription = "Фильтр")
+                                    Icon(
+                                        getFilterIconForSelector(currentFilter),
+                                        contentDescription = "Фильтр"
+                                    )
                                 }
                             }
                         } else {
@@ -107,7 +133,6 @@ fun ContactSelectorDialog(
                     )
                 )
 
-                // Список контактов
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -131,9 +156,7 @@ fun ContactSelectorDialog(
                                     duplicateContact?.let { selectedDuplicateContact = it }
                                 }
                             },
-                            hasDuplicate = viewModel.hasDuplicates(contact.id),
-                            getDuplicateIds = { viewModel.getDuplicateContacts(contact.id) },
-                            contacts = viewModel.contacts.value
+                            hasDuplicate = viewModel.hasDuplicates(contact.id)
                         )
                     }
 
@@ -166,7 +189,6 @@ fun ContactSelectorDialog(
         }
     }
 
-    // Диалог выбора фильтра
     if (showFilterMenu) {
         AlertDialog(
             onDismissRequest = { showFilterMenu = false },
@@ -197,7 +219,7 @@ fun ContactSelectorDialog(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
-                                    getFilterIcon(filter),
+                                    getFilterIconForSelector(filter),
                                     contentDescription = null,
                                     modifier = Modifier.size(24.dp),
                                     tint = if (isSelected)
@@ -206,7 +228,7 @@ fun ContactSelectorDialog(
                                 )
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Text(
-                                    text = getFilterDisplayName(filter),
+                                    text = getFilterDisplayNameForSelector(filter),
                                     color = if (isSelected)
                                         MaterialTheme.colorScheme.primary
                                     else MaterialTheme.colorScheme.onSurface
@@ -224,37 +246,46 @@ fun ContactSelectorDialog(
         )
     }
 
-    // Диалог информации о контакте (при нажатии на i)
     if (selectedContactForInfo != null) {
         ContactDetailsDialog(
             contact = selectedContactForInfo!!,
-            methods = viewModel.getMethodsForContact(selectedContactForInfo!!.id)
-                .collectAsState(initial = emptyList()).value,
-            onDismiss = { selectedContactForInfo = null }
+            methods = contactMethods,
+            onDismiss = {
+                selectedContactForInfo = null
+                contactMethods = emptyList()
+            }
         )
     }
 
-    // Диалог информации о дубликате (при нажатии на !)
     if (selectedDuplicateContact != null) {
         ContactDetailsDialog(
             contact = selectedDuplicateContact!!,
-            methods = viewModel.getMethodsForContact(selectedDuplicateContact!!.id)
-                .collectAsState(initial = emptyList()).value,
-            onDismiss = { selectedDuplicateContact = null }
+            methods = duplicateMethods,
+            onDismiss = {
+                selectedDuplicateContact = null
+                duplicateMethods = emptyList()
+            }
         )
     }
 
     if (editingContact != null) {
         val contactToEdit = editingContact
-        val methods = viewModel.getMethodsForContact(contactToEdit!!.id)
-            .collectAsState(initial = emptyList()).value
+        var editMethods by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
+
+        LaunchedEffect(contactToEdit) {
+            if (contactToEdit != null) {
+                viewModel.getContactMethods(contactToEdit.id).collect { methods ->
+                    editMethods = methods
+                }
+            }
+        }
 
         ContactEditDialog(
             contact = contactToEdit,
-            methods = methods,
+            methods = editMethods,
             onDismiss = { editingContact = null },
             onSave = { name, description, addedMethods, updatedMethods, deletedMethods ->
-                val updatedContact = contactToEdit.copy(
+                val updatedContact = contactToEdit!!.copy(
                     name = name,
                     description = description
                 )
@@ -282,9 +313,7 @@ fun SelectableContactCard(
     onEdit: () -> Unit,
     onInfo: () -> Unit,
     onDuplicateClick: () -> Unit,
-    hasDuplicate: Boolean,
-    getDuplicateIds: () -> List<String>,
-    contacts: List<Contact>
+    hasDuplicate: Boolean
 ) {
     Card(
         modifier = Modifier
@@ -339,5 +368,32 @@ fun SelectableContactCard(
                 }
             }
         }
+    }
+}
+
+// ==================== ЛОКАЛЬНЫЕ ВЕРСИИ ФУНКЦИЙ (с уникальными именами) ====================
+
+@Composable
+fun getFilterIconForSelector(filter: SearchFilter): androidx.compose.ui.graphics.vector.ImageVector {
+    return when (filter) {
+        SearchFilter.BY_NAME -> Icons.Default.Person
+        SearchFilter.BY_DESCRIPTION -> Icons.Default.Description
+        SearchFilter.BY_PHONE -> Icons.Default.Phone
+        SearchFilter.BY_TELEGRAM -> Icons.Default.Send
+        SearchFilter.BY_VK -> Icons.Default.People
+        SearchFilter.BY_EMAIL -> Icons.Default.Email
+        SearchFilter.BY_OTHER -> Icons.Default.Link
+    }
+}
+
+fun getFilterDisplayNameForSelector(filter: SearchFilter): String {
+    return when (filter) {
+        SearchFilter.BY_NAME -> "По имени"
+        SearchFilter.BY_DESCRIPTION -> "По описанию"
+        SearchFilter.BY_PHONE -> "Телефон"
+        SearchFilter.BY_TELEGRAM -> "Telegram"
+        SearchFilter.BY_VK -> "VK"
+        SearchFilter.BY_EMAIL -> "Email"
+        SearchFilter.BY_OTHER -> "Другой способ"
     }
 }

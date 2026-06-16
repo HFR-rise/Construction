@@ -23,5 +23,6 @@ data class ContactMethod(
     val id: String = UUID.randomUUID().toString(),
     val contactId: String,
     val methodType: String,
-    val value: String
+    val value: String,
+    val userId: String = ""
 )

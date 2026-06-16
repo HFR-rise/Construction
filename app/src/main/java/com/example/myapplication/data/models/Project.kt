@@ -8,20 +8,21 @@ import java.util.UUID
 
 @Entity(
     tableName = "projects",
-    foreignKeys = [
-        ForeignKey(
-            entity = ObjectModel::class,
-            parentColumns = ["id"],
-            childColumns = ["objectId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ]
+//    foreignKeys = [
+//        ForeignKey(
+//            entity = ObjectModel::class,
+//            parentColumns = ["id"],
+//            childColumns = ["objectId"],
+//            onDelete = ForeignKey.CASCADE
+//        )
+//    ]
 )
 data class Project(
     @PrimaryKey
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val description: String = "",
+    val shareStatus: String = "PENDING",
     val objectId: String? = null,
     val customerContactId: String? = null,
     val foremanContactId: String? = null,
@@ -32,7 +33,9 @@ data class Project(
     val updatedAt: Date = Date(),
     val status: ProjectStatus = ProjectStatus.ACTIVE,
     val totalBudget: Double = 0.0,
-    val totalSpent: Double = 0.0
+    val totalSpent: Double = 0.0,
+    val ownerId: String = "",  // ← Уже есть?
+    val userId: String = ""    // ← ДОБАВИТЬ ЭТУ СТРОКУ!
 )
 
 enum class ProjectStatus {

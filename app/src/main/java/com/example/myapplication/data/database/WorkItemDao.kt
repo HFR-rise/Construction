@@ -7,6 +7,9 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface WorkItemDao {
 
+    @Query("DELETE FROM work_items WHERE id = :workItemId")
+    suspend fun deleteWorkItemById(workItemId: String)
+
     @Query("SELECT * FROM work_items WHERE projectId = :projectId ORDER BY stage ASC")
     fun getWorkItemsForProject(projectId: String): Flow<List<WorkItem>>
 
@@ -21,4 +24,12 @@ interface WorkItemDao {
 
     @Delete
     suspend fun deleteWorkItem(workItem: WorkItem)
+
+    @Query("DELETE FROM projects")
+    suspend fun deleteAll()
+
+    @Query("SELECT * FROM work_items WHERE id = :id")
+    suspend fun getWorkItemById(id: String): WorkItem?
+
+
 }

@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.example.myapplication.data.models.Contact
+import com.example.myapplication.data.models.ContactMethod
 import com.example.myapplication.data.models.Material
 import com.example.myapplication.data.models.WorkItem
 import com.example.myapplication.viewmodels.ProjectsViewModel
@@ -99,7 +100,7 @@ fun ContactSelectorRowSimple(
         val contactsViewModel: ContactsViewModel = hiltViewModel()
         ContactDetailsDialog(
             contact = selectedContact,
-            methods = contactsViewModel.getMethodsForContact(selectedContact.id)
+            methods = contactsViewModel.getContactMethods(selectedContact.id)
                 .collectAsState(initial = emptyList()).value,
             onDismiss = { showContactInfo = false }
         )
@@ -333,7 +334,6 @@ fun CreateProjectScreen(
     projectId: String? = null,
     viewModel: ProjectsViewModel = hiltViewModel()
 ) {
-
     val contactsViewModel: ContactsViewModel = hiltViewModel()
 
     var currentStep by remember { mutableStateOf(1) }
@@ -368,18 +368,53 @@ fun CreateProjectScreen(
     var showForemanInfo by remember { mutableStateOf(false) }
     var showManagerInfo by remember { mutableStateOf(false) }
 
+    // Состояния для хранения способов связи выбранных контактов
+    var customerMethods by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
+    var foremanMethods by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
+    var managerMethods by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
+
+    // Загружаем методы для выбранных контактов
+    LaunchedEffect(selectedCustomer) {
+        if (selectedCustomer != null) {
+            contactsViewModel.getContactMethods(selectedCustomer!!.id).collect { methods ->
+                customerMethods = methods
+            }
+        } else {
+            customerMethods = emptyList()
+        }
+    }
+
+    LaunchedEffect(selectedForeman) {
+        if (selectedForeman != null) {
+            contactsViewModel.getContactMethods(selectedForeman!!.id).collect { methods ->
+                foremanMethods = methods
+            }
+        } else {
+            foremanMethods = emptyList()
+        }
+    }
+
+    LaunchedEffect(selectedManager) {
+        if (selectedManager != null) {
+            contactsViewModel.getContactMethods(selectedManager!!.id).collect { methods ->
+                managerMethods = methods
+            }
+        } else {
+            managerMethods = emptyList()
+        }
+    }
 
     // Загружаем данные при редактировании или просмотре
+    // CreateProjectScreen.kt - исправленный LaunchedEffect
+
     LaunchedEffect(projectId, mode) {
         if ((mode == ProjectScreenMode.EDIT || mode == ProjectScreenMode.VIEW) && projectId != null) {
-            // Ждём пока контакты загрузятся
+            // Ждём загрузки контактов
             if (viewModel.hasAnyContacts()) {
-                // Контакты есть - ждём их загрузки
                 Log.d("CreateProjectScreen", "Waiting for contacts to load...")
                 viewModel.contacts.first { it.isNotEmpty() }
                 Log.d("CreateProjectScreen", "Contacts loaded: ${viewModel.contacts.value.size}")
             } else {
-                // Контактов нет - не ждём
                 Log.d("CreateProjectScreen", "No contacts in database, skipping wait")
             }
 
@@ -398,8 +433,16 @@ fun CreateProjectScreen(
                 includeForeman = project.includeForeman
                 includeManager = project.includeManager
 
-                if (viewModel.contacts.value.isNotEmpty()){
+                // ✅ ЗАГРУЖАЕМ МАТЕРИАЛЫ
+                materials = viewModel.getMaterialsForProject(projectId)
+                Log.d("CreateProjectScreen", "Materials loaded: ${materials.size}")
 
+                // ✅ ЗАГРУЖАЕМ РАБОТЫ
+                workItems = viewModel.getWorkItemsForProject(projectId)
+                Log.d("CreateProjectScreen", "Work items loaded: ${workItems.size}")
+
+                // Загружаем контакты
+                if (viewModel.contacts.value.isNotEmpty()) {
                     if (project.customerContactId != null) {
                         selectedCustomer = contacts.find { it.id == project.customerContactId }
                         Log.d("CreateProjectScreen", "Customer found: ${selectedCustomer?.name}")
@@ -412,9 +455,6 @@ fun CreateProjectScreen(
                         selectedManager = contacts.find { it.id == project.managerContactId }
                         Log.d("CreateProjectScreen", "Manager found: ${selectedManager?.name}")
                     }
-
-                    materials = viewModel.getMaterialsForProject(projectId)
-                    workItems = viewModel.getWorkItemsForProject(projectId)
                 }
             }
             isLoading = false
@@ -438,17 +478,18 @@ fun CreateProjectScreen(
                     Text(
                         title,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp
+                        fontSize = 20.sp,
+                        color = Color.White
                     )
                 },
                 navigationIcon = {
                     if (currentStep == 2) {
                         IconButton(onClick = { currentStep = 1 }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Назад", tint = Color.White)
                         }
                     } else {
                         IconButton(onClick = { navController.navigateUp() }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Назад", tint = Color.White)
                         }
                     }
                 },
@@ -491,19 +532,16 @@ fun CreateProjectScreen(
             GradientDivider()
             if (isLoading) {
                 Box(
-                    modifier = Modifier
-                        .fillMaxSize(),
+                    modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
                     CircularProgressIndicator()
                 }
             } else {
-                Column(
-                    modifier = Modifier.fillMaxSize()
-                ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // Основной контент
                     Column(
-                        modifier = Modifier
-                            .weight(1f)
+                        modifier = Modifier.weight(1f)
                     ) {
                         if (currentStep == 1) {
                             // Шаг 1: Основная информация
@@ -570,10 +608,7 @@ fun CreateProjectScreen(
                                         if (showCustomerInfo && selectedCustomer != null) {
                                             ContactDetailsDialog(
                                                 contact = selectedCustomer!!,
-                                                methods = contactsViewModel.getMethodsForContact(
-                                                    selectedCustomer!!.id
-                                                )
-                                                    .collectAsState(initial = emptyList()).value,
+                                                methods = customerMethods,
                                                 onDismiss = { showCustomerInfo = false }
                                             )
                                         }
@@ -624,10 +659,7 @@ fun CreateProjectScreen(
                                         if (showForemanInfo && selectedForeman != null) {
                                             ContactDetailsDialog(
                                                 contact = selectedForeman!!,
-                                                methods = contactsViewModel.getMethodsForContact(
-                                                    selectedForeman!!.id
-                                                )
-                                                    .collectAsState(initial = emptyList()).value,
+                                                methods = foremanMethods,
                                                 onDismiss = { showForemanInfo = false }
                                             )
                                         }
@@ -641,6 +673,7 @@ fun CreateProjectScreen(
                                         )
                                     }
                                 }
+
                                 item {
                                     if (isReadOnly) {
                                         Row(
@@ -655,18 +688,40 @@ fun CreateProjectScreen(
                                             Text("Включить в проект", color = Color.Gray)
                                         }
                                     } else {
+                                        val hasPhoneNumber = foremanMethods.any { method ->
+                                            method.methodType.contains("телефон", ignoreCase = true) ||
+                                                    method.methodType.contains("phone", ignoreCase = true)
+                                        }
+
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Checkbox(
                                                 checked = includeForeman,
-                                                onCheckedChange = { includeForeman = it },
-                                                enabled = selectedForeman != null
+                                                onCheckedChange = if (hasPhoneNumber && selectedForeman != null) {
+                                                    { includeForeman = it }
+                                                } else {
+                                                    null
+                                                },
+                                                enabled = hasPhoneNumber && selectedForeman != null
                                             )
                                             Text(
                                                 "Включить в проект",
-                                                color = if (selectedForeman != null) Color.Unspecified else Color.Gray
+                                                color = if (hasPhoneNumber && selectedForeman != null) Color.Unspecified else Color.Gray,
+                                                modifier = Modifier.clickable(
+                                                    enabled = hasPhoneNumber && selectedForeman != null,
+                                                    onClick = { includeForeman = !includeForeman }
+                                                )
+                                            )
+                                        }
+
+                                        if (selectedForeman != null && !hasPhoneNumber) {
+                                            Text(
+                                                text = "Для этого контакта не указан номер телефона",
+                                                fontSize = 11.sp,
+                                                color = Color.Red,
+                                                modifier = Modifier.padding(start = 8.dp, top = 4.dp)
                                             )
                                         }
                                     }
@@ -708,10 +763,7 @@ fun CreateProjectScreen(
                                         if (showManagerInfo && selectedManager != null) {
                                             ContactDetailsDialog(
                                                 contact = selectedManager!!,
-                                                methods = contactsViewModel.getMethodsForContact(
-                                                    selectedManager!!.id
-                                                )
-                                                    .collectAsState(initial = emptyList()).value,
+                                                methods = managerMethods,
                                                 onDismiss = { showManagerInfo = false }
                                             )
                                         }
@@ -725,6 +777,7 @@ fun CreateProjectScreen(
                                         )
                                     }
                                 }
+
                                 item {
                                     if (isReadOnly) {
                                         Row(
@@ -739,18 +792,40 @@ fun CreateProjectScreen(
                                             Text("Включить в проект", color = Color.Gray)
                                         }
                                     } else {
+                                        val hasPhoneNumber = managerMethods.any { method ->
+                                            method.methodType.contains("телефон", ignoreCase = true) ||
+                                                    method.methodType.contains("phone", ignoreCase = true)
+                                        }
+
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Checkbox(
                                                 checked = includeManager,
-                                                onCheckedChange = { includeManager = it },
-                                                enabled = selectedManager != null
+                                                onCheckedChange = if (hasPhoneNumber && selectedManager != null) {
+                                                    { includeManager = it }
+                                                } else {
+                                                    null
+                                                },
+                                                enabled = hasPhoneNumber && selectedManager != null
                                             )
                                             Text(
                                                 "Включить в проект",
-                                                color = if (selectedManager != null) Color.Unspecified else Color.Gray
+                                                color = if (hasPhoneNumber && selectedManager != null) Color.Unspecified else Color.Gray,
+                                                modifier = Modifier.clickable(
+                                                    enabled = hasPhoneNumber && selectedManager != null,
+                                                    onClick = { includeManager = !includeManager }
+                                                )
+                                            )
+                                        }
+
+                                        if (selectedManager != null && !hasPhoneNumber) {
+                                            Text(
+                                                text = "Для этого контакта не указан номер телефона",
+                                                fontSize = 11.sp,
+                                                color = Color.Red,
+                                                modifier = Modifier.padding(start = 8.dp, top = 4.dp)
                                             )
                                         }
                                     }
@@ -778,34 +853,17 @@ fun CreateProjectScreen(
                                         if (isReadOnly) {
                                             Card(
                                                 modifier = Modifier.fillMaxWidth(),
-                                                elevation = CardDefaults.cardElevation(
-                                                    defaultElevation = 2.dp
-                                                )
+                                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                                             ) {
                                                 Row(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(12.dp),
+                                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
                                                     horizontalArrangement = Arrangement.SpaceBetween,
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
                                                     Column(modifier = Modifier.weight(1f)) {
+                                                        Text(material.name, fontWeight = FontWeight.Medium)
                                                         Text(
-                                                            material.name,
-                                                            fontWeight = FontWeight.Medium
-                                                        )
-                                                        Text(
-                                                            text = "${material.quantity} ${material.unit} × ${
-                                                                String.format(
-                                                                    "%.2f",
-                                                                    material.unitPrice
-                                                                )
-                                                            } ₽ = ${
-                                                                String.format(
-                                                                    "%.2f",
-                                                                    material.totalPrice
-                                                                )
-                                                            } ₽",
+                                                            text = "${material.quantity} ${material.unit} × ${String.format("%.2f", material.unitPrice)} ₽ = ${String.format("%.2f", material.totalPrice)} ₽",
                                                             fontSize = 12.sp,
                                                             color = Color.Gray
                                                         )
@@ -816,8 +874,7 @@ fun CreateProjectScreen(
                                             MaterialItemPreview(
                                                 material = material,
                                                 onDelete = {
-                                                    materials =
-                                                        materials.filter { it.id != material.id }
+                                                    materials = materials.filter { it.id != material.id }
                                                 }
                                             )
                                         }
@@ -839,54 +896,27 @@ fun CreateProjectScreen(
                                         if (isReadOnly) {
                                             Card(
                                                 modifier = Modifier.fillMaxWidth(),
-                                                elevation = CardDefaults.cardElevation(
-                                                    defaultElevation = 2.dp
-                                                )
+                                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                                             ) {
                                                 Row(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(12.dp),
+                                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
                                                     horizontalArrangement = Arrangement.SpaceBetween,
                                                     verticalAlignment = Alignment.CenterVertically
                                                 ) {
                                                     Column(modifier = Modifier.weight(1f)) {
+                                                        Text(work.name, fontWeight = FontWeight.Medium)
                                                         Text(
-                                                            work.name,
-                                                            fontWeight = FontWeight.Medium
-                                                        )
-                                                        Text(
-                                                            text = "Труд: ${work.laborHours} ч × ${
-                                                                String.format(
-                                                                    "%.2f",
-                                                                    work.hourlyRate
-                                                                )
-                                                            } ₽ = ${
-                                                                String.format(
-                                                                    "%.2f",
-                                                                    work.laborCost
-                                                                )
-                                                            } ₽",
+                                                            text = "Труд: ${work.laborHours} ч × ${String.format("%.2f", work.hourlyRate)} ₽ = ${String.format("%.2f", work.laborCost)} ₽",
                                                             fontSize = 12.sp,
                                                             color = Color.Gray
                                                         )
                                                         Text(
-                                                            text = "Материалы: ${
-                                                                String.format(
-                                                                    "%.2f",
-                                                                    work.materialCost
-                                                                )
-                                                            } ₽",
+                                                            text = "Материалы: ${String.format("%.2f", work.materialCost)} ₽",
                                                             fontSize = 12.sp,
                                                             color = Color.Gray
                                                         )
                                                         Text(
-                                                            text = "Итого: ${
-                                                                String.format(
-                                                                    "%.2f",
-                                                                    work.totalCost
-                                                                )
-                                                            } ₽",
+                                                            text = "Итого: ${String.format("%.2f", work.totalCost)} ₽",
                                                             fontWeight = FontWeight.Bold,
                                                             fontSize = 13.sp,
                                                             color = MaterialTheme.colorScheme.primary
@@ -898,8 +928,7 @@ fun CreateProjectScreen(
                                             WorkItemPreview(
                                                 workItem = work,
                                                 onDelete = {
-                                                    workItems =
-                                                        workItems.filter { it.id != work.id }
+                                                    workItems = workItems.filter { it.id != work.id }
                                                 }
                                             )
                                         }
@@ -914,20 +943,12 @@ fun CreateProjectScreen(
                                         )
                                     ) {
                                         Column(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(16.dp),
+                                            modifier = Modifier.fillMaxWidth().padding(16.dp),
                                             horizontalAlignment = Alignment.CenterHorizontally
                                         ) {
                                             Text("Расходы", fontWeight = FontWeight.Bold)
                                             Text(
-                                                text = "${
-                                                    String.format(
-                                                        Locale.US,
-                                                        "%.2f",
-                                                        grandTotal
-                                                    )
-                                                } ₽",
+                                                text = "${String.format(Locale.US, "%.2f", grandTotal)} ₽",
                                                 fontSize = 24.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = MaterialTheme.colorScheme.primary
@@ -939,6 +960,7 @@ fun CreateProjectScreen(
                         }
                     }
 
+                    // Кнопка действия внизу
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shadowElevation = 8.dp,
@@ -947,9 +969,7 @@ fun CreateProjectScreen(
                         if (currentStep == 1) {
                             Button(
                                 onClick = { currentStep = 2 },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
                                 enabled = name.isNotBlank() || isReadOnly
                             ) {
                                 Text("Далее")
@@ -960,10 +980,18 @@ fun CreateProjectScreen(
                                     when (mode) {
                                         ProjectScreenMode.CREATE -> {
                                             if (name.isNotBlank()) {
+                                                val finalObjectId = when {
+                                                    objectId == null -> null
+                                                    objectId == "none" -> null
+                                                    objectId == "root" -> null
+                                                    objectId.isEmpty() -> null
+                                                    else -> objectId
+                                                }
+                                                Log.d("CreateProjectScreen", "Creating project with objectId: $finalObjectId")
                                                 viewModel.createProjectWithMaterialsAndWorks(
                                                     name = name,
                                                     description = description,
-                                                    objectId = objectId,
+                                                    objectId = finalObjectId,
                                                     materials = materials,
                                                     workItems = workItems,
                                                     customerContactId = selectedCustomer?.id,
@@ -976,7 +1004,6 @@ fun CreateProjectScreen(
                                                 navController.navigateUp()
                                             }
                                         }
-
                                         ProjectScreenMode.EDIT -> {
                                             if (projectId != null && name.isNotBlank()) {
                                                 viewModel.updateProject(
@@ -994,15 +1021,12 @@ fun CreateProjectScreen(
                                                 navController.navigateUp()
                                             }
                                         }
-
                                         ProjectScreenMode.VIEW -> {
                                             navController.navigateUp()
                                         }
                                     }
                                 },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
                                 enabled = if (mode == ProjectScreenMode.VIEW) true else name.isNotBlank()
                             ) {
                                 Text(
@@ -1020,6 +1044,7 @@ fun CreateProjectScreen(
         }
     }
 
+    // Диалоги
     if (!isReadOnly && showCustomerSelector) {
         ContactSelectorDialog(
             title = "Выберите заказчика",

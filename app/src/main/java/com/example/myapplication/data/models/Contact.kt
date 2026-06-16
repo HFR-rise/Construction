@@ -10,5 +10,6 @@ data class Contact(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val description: String = "",
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val userId: String = ""
 )

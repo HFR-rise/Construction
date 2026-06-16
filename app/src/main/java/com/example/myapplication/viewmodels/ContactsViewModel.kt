@@ -5,9 +5,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.myapplication.data.models.Contact
 import com.example.myapplication.data.models.ContactMethod
-import com.example.myapplication.data.repository.ProjectRepository
+import com.example.myapplication.data.repository.ContactRepository
+import com.example.myapplication.services.SyncManager
 import com.example.myapplication.utils.FuzzySearch
+import com.example.myapplication.utils.UserPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -26,7 +29,9 @@ enum class SearchFilter(
 
 @HiltViewModel
 class ContactsViewModel @Inject constructor(
-    private val repo: ProjectRepository
+    private val repo: ContactRepository,
+    private val syncManager: SyncManager,
+    private val userPreferences: UserPreferences
 ) : ViewModel() {
 
     private val _contacts = MutableStateFlow<List<Contact>>(emptyList())
@@ -39,12 +44,28 @@ class ContactsViewModel @Inject constructor(
     val currentFilter: StateFlow<SearchFilter> = _currentFilter
 
     private val _contactMethodsCache = MutableStateFlow<Map<String, List<ContactMethod>>>(emptyMap())
-
     private val _duplicatesCache = MutableStateFlow<Map<String, List<String>>>(emptyMap())
     val duplicatesCache: StateFlow<Map<String, List<String>>> = _duplicatesCache
 
     private val _duplicatesVersion = MutableStateFlow(0)
     val duplicatesVersion: StateFlow<Int> = _duplicatesVersion
+
+    private val _editingContact = MutableStateFlow<Contact?>(null)
+    val editingContact: StateFlow<Contact?> = _editingContact
+
+    private val _showAddDialog = MutableStateFlow(false)
+    val showAddDialog: StateFlow<Boolean> = _showAddDialog
+
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing
+
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage
+
+    init {
+        loadContacts()
+        loadAllContactMethods()
+    }
 
     private fun updateMethodsCache(contactId: String, methods: List<ContactMethod>) {
         val currentCache = _contactMethodsCache.value.toMutableMap()
@@ -54,7 +75,7 @@ class ContactsViewModel @Inject constructor(
     }
 
     private fun normalizePhoneForSearch(phone: String): String {
-        if(phone.length>=2) {
+        if (phone.length >= 2) {
             if (phone[0] == '+' && phone[1] != '7') {
                 return ""
             }
@@ -62,27 +83,11 @@ class ContactsViewModel @Inject constructor(
         val digitsOnly = phone.replace(Regex("[^\\d]"), "")
 
         return when {
-            // Если номер начинается с 8 (полный 11-значный) - заменяем на 7
-            digitsOnly.startsWith("8") && digitsOnly.length == 11 -> {
-                "7" + digitsOnly.substring(1)
-            }
-            // Если номер начинается с 8 (частичный ввод, например "89") - заменяем на 7
-            digitsOnly.startsWith("8") -> {
-                "7" + digitsOnly.substring(1)
-            }
-            // Если номер начинается с 7 - оставляем
-            digitsOnly.startsWith("7") -> {
-                digitsOnly
-            }
-            // Если номер имеет 10 цифр (без кода страны) - добавляем 7
-            digitsOnly.length == 10 -> {
-                "7" + digitsOnly
-            }
-
-            // Для частичного ввода без 8 (например "916")
-            digitsOnly.isNotEmpty() && digitsOnly.length <= 10 && digitsOnly.all { it.isDigit() } -> {
-                "7" + digitsOnly
-            }
+            digitsOnly.startsWith("8") && digitsOnly.length == 11 -> "7" + digitsOnly.substring(1)
+            digitsOnly.startsWith("8") -> "7" + digitsOnly.substring(1)
+            digitsOnly.startsWith("7") -> digitsOnly
+            digitsOnly.length == 10 -> "7" + digitsOnly
+            digitsOnly.isNotEmpty() && digitsOnly.length <= 10 && digitsOnly.all { it.isDigit() } -> "7" + digitsOnly
             else -> digitsOnly
         }
     }
@@ -129,13 +134,9 @@ class ContactsViewModel @Inject constructor(
         _duplicatesVersion.value += 1
     }
 
-    fun hasDuplicates(contactId: String): Boolean {
-        return _duplicatesCache.value.containsKey(contactId)
-    }
+    fun hasDuplicates(contactId: String): Boolean = _duplicatesCache.value.containsKey(contactId)
 
-    fun getDuplicateContacts(contactId: String): List<String> {
-        return _duplicatesCache.value[contactId] ?: emptyList()
-    }
+    fun getDuplicateContacts(contactId: String): List<String> = _duplicatesCache.value[contactId] ?: emptyList()
 
     val filteredContacts: StateFlow<List<Contact>> = combine(
         _contacts,
@@ -166,11 +167,8 @@ class ContactsViewModel @Inject constructor(
                     )
                 }
                 SearchFilter.BY_PHONE -> {
-                    val normalizedQuery = query.lowercase().trim()
-
                     when {
                         normalizedQuery.isEmpty() -> contacts
-
                         normalizedQuery == "+" -> {
                             contacts.filter { contact ->
                                 val methods = methodsCache[contact.id] ?: emptyList()
@@ -180,7 +178,6 @@ class ContactsViewModel @Inject constructor(
                                 }
                             }
                         }
-
                         else -> {
                             contacts.filter { contact ->
                                 val methods = methodsCache[contact.id] ?: emptyList()
@@ -191,18 +188,8 @@ class ContactsViewModel @Inject constructor(
                                     if (methodType.contains("телефон") || methodType.contains("phone")) {
                                         val normalizedValue = normalizePhoneForSearch(methodValue)
                                         val normalizedQueryPhone = normalizePhoneForSearch(normalizedQuery)
-
-                                        Log.d("PhoneSearch", "=== PHONE SEARCH ===")
-                                        Log.d("PhoneSearch", "Raw query: '$normalizedQuery'")
-                                        Log.d("PhoneSearch", "Normalized query: '$normalizedQueryPhone'")
-                                        Log.d("PhoneSearch", "Raw value: '$methodValue'")
-                                        Log.d("PhoneSearch", "Normalized value: '$normalizedValue'")
-                                        Log.d("PhoneSearch", "StartsWith: ${normalizedValue.startsWith(normalizedQueryPhone)}")
-
                                         normalizedQueryPhone.isNotEmpty() && normalizedValue.startsWith(normalizedQueryPhone)
-                                    } else {
-                                        false
-                                    }
+                                    } else false
                                 }
                             }
                         }
@@ -273,29 +260,6 @@ class ContactsViewModel @Inject constructor(
         initialValue = emptyList()
     )
 
-    private val _editingContact = MutableStateFlow<Contact?>(null)
-    val editingContact: StateFlow<Contact?> = _editingContact
-
-    private val _showAddDialog = MutableStateFlow(false)
-    val showAddDialog: StateFlow<Boolean> = _showAddDialog
-
-    init {
-        loadContacts()
-        loadAllContactMethods()
-    }
-
-    fun updateSearchQuery(query: String) {
-        _searchQuery.value = query
-    }
-
-    fun clearSearch() {
-        _searchQuery.value = ""
-    }
-
-    fun updateSearchFilter(filter: SearchFilter) {
-        _currentFilter.value = filter
-    }
-
     private fun loadContacts() {
         viewModelScope.launch {
             repo.getAllContacts().collect { list ->
@@ -325,33 +289,58 @@ class ContactsViewModel @Inject constructor(
         }
     }
 
-    private fun getMaxDistance(query: String): Int {
-        return when (query.length) {
-            1 -> 0
-            2 -> 1
-            else -> 2
-        }
+    private fun getMaxDistance(query: String): Int = when (query.length) {
+        1 -> 0
+        2 -> 1
+        else -> 2
     }
 
     fun addContactWithMethods(name: String, description: String, methods: List<ContactMethod>) {
         viewModelScope.launch {
-            val contact = Contact(
-                name = name,
-                description = description
-            )
-            val contactId = repo.addContact(contact)
+            try {
+                Log.e("ContactsViewModel", "!!! ADD CONTACT WITH METHODS CALLED !!!")
+                Log.d("ContactsViewModel", "Name: $name")
+                Log.d("ContactsViewModel", "Description: $description")
+                Log.d("ContactsViewModel", "Methods count: ${methods.size}")
 
-            methods.forEach { method ->
-                val newMethod = ContactMethod(
-                    contactId = contactId,
-                    methodType = method.methodType,
-                    value = method.value
+                val userId = userPreferences.getUserId()
+                Log.e("ContactsViewModel", "Current userId: '$userId'")
+
+                if (userId == null) {
+                    Log.e("ContactsViewModel", "❌ Cannot create contact: userId is null!")
+                    _errorMessage.value = "Ошибка: пользователь не авторизован"
+                    return@launch
+                }
+
+                val contact = Contact(
+                    name = name,
+                    description = description,
+                    userId = userId
                 )
-                repo.addContactMethod(newMethod)
-            }
 
-            loadMethodsForContact(contactId)
-            _showAddDialog.value = false
+                Log.e("ContactsViewModel", "Calling repo.addContact()...")
+                val contactId = repo.addContact(contact)
+                Log.e("ContactsViewModel", "✅✅✅ Contact created with id: $contactId ✅✅✅")
+
+                methods.forEach { method ->
+                    Log.d("ContactsViewModel", "Adding method: ${method.methodType} -> ${method.value}")
+                    val newMethod = ContactMethod(
+                        contactId = contactId,
+                        methodType = method.methodType,
+                        value = method.value,
+                        userId = userId
+                    )
+                    repo.addContactMethod(newMethod)
+                }
+
+                _showAddDialog.value = false
+                loadContacts()
+                Log.e("ContactsViewModel", "✅ Contact creation completed successfully!")
+
+            } catch (e: Exception) {
+                Log.e("ContactsViewModel", "❌ Error creating contact: ${e.message}", e)
+                _errorMessage.value = "Ошибка: ${e.message}"
+            }
         }
     }
 
@@ -360,7 +349,8 @@ class ContactsViewModel @Inject constructor(
             val method = ContactMethod(
                 contactId = contactId,
                 methodType = methodType,
-                value = value
+                value = value,
+                userId = userPreferences.getUserId() ?: ""
             )
             repo.addContactMethod(method)
             loadMethodsForContact(contactId)
@@ -414,7 +404,47 @@ class ContactsViewModel @Inject constructor(
         }
     }
 
-    fun getMethodsForContact(contactId: String): Flow<List<ContactMethod>> {
+    fun getContactMethods(contactId: String): Flow<List<ContactMethod>> {
         return repo.getContactMethods(contactId)
+    }
+
+    fun refreshData() {
+        viewModelScope.launch {
+            if (_isRefreshing.value) return@launch
+            _isRefreshing.value = true
+
+            try {
+                val userId = userPreferences.getUserId()
+                if (userId != null && syncManager.hasInternetConnection()) {
+                    Log.d("ContactsViewModel", "Refreshing contacts from server")
+                    syncManager.syncDataFromServer(userId)
+                    delay(1000)
+                    loadContacts()
+                    loadAllContactMethods()
+                } else {
+                    Log.d("ContactsViewModel", "No internet or user not logged in, skipping refresh")
+                }
+            } catch (e: Exception) {
+                Log.e("ContactsViewModel", "Error refreshing data: ${e.message}")
+            } finally {
+                _isRefreshing.value = false
+            }
+        }
+    }
+
+    fun updateSearchQuery(query: String) {
+        _searchQuery.value = query
+    }
+
+    fun clearSearch() {
+        _searchQuery.value = ""
+    }
+
+    fun updateSearchFilter(filter: SearchFilter) {
+        _currentFilter.value = filter
+    }
+
+    fun clearErrorMessage() {
+        _errorMessage.value = null
     }
 }

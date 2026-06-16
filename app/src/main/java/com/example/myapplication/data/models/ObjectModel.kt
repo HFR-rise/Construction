@@ -1,23 +1,10 @@
 package com.example.myapplication.data.models
 
 import androidx.room.Entity
-import androidx.room.ForeignKey
-import androidx.room.Index
 import androidx.room.PrimaryKey
 import java.util.UUID
 
-@Entity(
-    tableName = "objects",
-    foreignKeys = [
-        ForeignKey(
-            entity = ObjectModel::class,
-            parentColumns = ["id"],
-            childColumns = ["parentObjectId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
-    indices = [Index(value = ["parentObjectId"])]
-)
+@Entity(tableName = "objects")  // ← УБРАТЬ foreignKeys
 data class ObjectModel(
     @PrimaryKey
     val id: String = UUID.randomUUID().toString(),
@@ -27,7 +14,8 @@ data class ObjectModel(
     val building: String = "",
     val description: String = "",
     val parentObjectId: String? = null,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val userId: String = ""
 ) {
     fun getFormattedAddress(): String {
         return buildString {

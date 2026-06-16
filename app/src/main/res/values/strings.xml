@@ -1,3 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">My Application</string>
+<string name="app_name">My Application</string>
+
+<!-- Ошибки авторизации -->
+<string name="invalid_phone_format">Неверный формат номера телефона</string>
+<string name="too_many_attempts">Слишком много попыток. Попробуйте позже.</string>
+<string name="invalid_verification_code">Неверный или просроченный код подтверждения</string>
+<string name="account_in_use">Аккаунт уже используется на другом устройстве</string>
+<string name="session_expired">Сессия истекла. Пожалуйста, войдите заново.</string>
+<string name="user_not_found">Пользователь не найден</string>
+<string name="network_error">Ошибка сети. Проверьте подключение к интернету.</string>
+
+<!-- Общие -->
+<string name="retry">Попробовать снова</string>
+<string name="change_number">Ввести другой номер</string>
+<string name="send_code">Получить код</string>
+<string name="verify_code">Войти</string>
 </resources>

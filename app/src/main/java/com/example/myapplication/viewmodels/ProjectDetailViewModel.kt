@@ -24,6 +24,10 @@ class ProjectDetailViewModel @Inject constructor(
 
     private val projectId: String = savedStateHandle["projectId"] ?: ""
 
+    // Триггер для принудительного обновления
+    private val _refreshTrigger = MutableStateFlow(0)
+    val refreshTrigger: StateFlow<Int> = _refreshTrigger
+
     private val _project = MutableStateFlow<com.example.myapplication.data.models.Project?>(null)
     val project: StateFlow<com.example.myapplication.data.models.Project?> = _project
 
@@ -90,9 +94,6 @@ class ProjectDetailViewModel @Inject constructor(
     private val _showWorkDialog = MutableStateFlow(false)
     val showWorkDialog: StateFlow<Boolean> = _showWorkDialog
 
-    private val _showDeleteConfirmation = MutableStateFlow(false)
-    val showDeleteConfirmation: StateFlow<Boolean> = _showDeleteConfirmation
-
     private val _editingMaterial = MutableStateFlow<Material?>(null)
     val editingMaterial: StateFlow<Material?> = _editingMaterial
 
@@ -100,7 +101,12 @@ class ProjectDetailViewModel @Inject constructor(
     val editingWorkItem: StateFlow<WorkItem?> = _editingWorkItem
 
     init {
-        loadData()
+        if (projectId.isNotEmpty()) {
+            loadData()
+        } else {
+            Log.e("ProjectDetailViewModel", "projectId is empty!")
+            _isLoading.value = false
+        }
     }
 
     fun updateMaterialSearchQuery(query: String) {
@@ -127,14 +133,6 @@ class ProjectDetailViewModel @Inject constructor(
         _showWorkDialog.value = false
     }
 
-    fun showDeleteConfirmation() {
-        _showDeleteConfirmation.value = true
-    }
-
-    fun hideDeleteConfirmation() {
-        _showDeleteConfirmation.value = false
-    }
-
     fun startEditMaterial(material: Material) {
         _editingMaterial.value = material
     }
@@ -153,77 +151,133 @@ class ProjectDetailViewModel @Inject constructor(
 
     private fun loadData() {
         viewModelScope.launch {
-            _project.value = repo.getProjectById(projectId)
+            _isLoading.value = true
+            Log.d("ProjectDetailViewModel", "Loading data for projectId: $projectId")
 
-            repo.getMaterials(projectId).collect { list ->
-                _materials.value = list
-            }
+            try {
+                _project.value = repo.getProjectById(projectId)
 
-            repo.getWorkItems(projectId).collect { list ->
-                _workItems.value = list
+                // Подписываемся на изменения материалов с refreshTrigger
+                combine(
+                    repo.getMaterials(projectId),
+                    _refreshTrigger
+                ) { materials, _ ->
+                    materials
+                }.collect { list ->
+                    Log.d("ProjectDetailViewModel", "Materials loaded: ${list.size}")
+                    _materials.value = list
+                }
+
+                // Подписываемся на изменения работ с refreshTrigger
+                combine(
+                    repo.getWorkItems(projectId),
+                    _refreshTrigger
+                ) { workItems, _ ->
+                    workItems
+                }.collect { list ->
+                    Log.d("ProjectDetailViewModel", "Work items loaded: ${list.size}")
+                    _workItems.value = list
+                    _isLoading.value = false
+                }
+            } catch (e: Exception) {
+                Log.e("ProjectDetailViewModel", "Error loading data: ${e.message}")
                 _isLoading.value = false
             }
         }
     }
 
+    fun refreshData() {
+        Log.d("ProjectDetailViewModel", "Refresh triggered")
+        _refreshTrigger.value++
+    }
+
     fun addMaterial(name: String, quantity: Double, unit: String, price: Double) {
         viewModelScope.launch {
-            val material = Material(
-                projectId = projectId,
-                name = name,
-                quantity = quantity,
-                unit = unit.ifBlank { "шт" },
-                unitPrice = price
-            )
-            repo.addMaterial(material)
-            _showMaterialDialog.value = false
+            try {
+                Log.d("ProjectDetailViewModel", "Adding material: $name")
+                val material = Material(
+                    projectId = projectId,
+                    name = name,
+                    quantity = quantity,
+                    unit = unit.ifBlank { "шт" },
+                    unitPrice = price
+                )
+                repo.addMaterial(material)
+                _showMaterialDialog.value = false
+                refreshData()
+            } catch (e: Exception) {
+                Log.e("ProjectDetailViewModel", "Error adding material: ${e.message}")
+            }
         }
     }
 
     fun updateMaterial(material: Material) {
         viewModelScope.launch {
-            repo.updateMaterial(material)
-            _editingMaterial.value = null
+            try {
+                Log.d("ProjectDetailViewModel", "Updating material: ${material.name}")
+                repo.updateMaterial(material)
+                _editingMaterial.value = null
+                refreshData()
+            } catch (e: Exception) {
+                Log.e("ProjectDetailViewModel", "Error updating material: ${e.message}")
+            }
         }
     }
 
     fun deleteMaterial(material: Material) {
         viewModelScope.launch {
-            repo.deleteMaterial(material)
+            try {
+                Log.d("ProjectDetailViewModel", "Deleting material: ${material.name}")
+                repo.deleteMaterial(material)
+                refreshData()
+            } catch (e: Exception) {
+                Log.e("ProjectDetailViewModel", "Error deleting material: ${e.message}")
+            }
         }
     }
 
     fun addWorkItem(name: String, hours: Double, rate: Double, materialCost: Double) {
         viewModelScope.launch {
-            val workItem = WorkItem(
-                projectId = projectId,
-                name = name,
-                laborHours = hours,
-                hourlyRate = rate,
-                materialCost = materialCost
-            )
-            repo.addWorkItem(workItem)
-            _showWorkDialog.value = false
+            try {
+                Log.d("ProjectDetailViewModel", "Adding work item: $name")
+                val workItem = WorkItem(
+                    projectId = projectId,
+                    name = name,
+                    laborHours = hours,
+                    hourlyRate = rate,
+                    materialCost = materialCost
+                )
+                repo.addWorkItem(workItem)
+                _showWorkDialog.value = false
+                refreshData()
+            } catch (e: Exception) {
+                Log.e("ProjectDetailViewModel", "Error adding work item: ${e.message}")
+            }
         }
     }
 
     fun updateWorkItem(workItem: WorkItem) {
         viewModelScope.launch {
-            repo.updateWorkItem(workItem)
-            _editingWorkItem.value = null
+            try {
+                Log.d("ProjectDetailViewModel", "Updating work item: ${workItem.name}")
+                repo.updateWorkItem(workItem)
+                _editingWorkItem.value = null
+                refreshData()
+            } catch (e: Exception) {
+                Log.e("ProjectDetailViewModel", "Error updating work item: ${e.message}")
+            }
         }
     }
 
     fun deleteWorkItem(workItem: WorkItem) {
         viewModelScope.launch {
-            repo.deleteWorkItem(workItem)
-        }
-    }
-
-    fun deleteProject() {
-        viewModelScope.launch {
-            _project.value?.let { repo.deleteProject(it) }
-            _showDeleteConfirmation.value = false
+            try {
+                Log.d("ProjectDetailViewModel", "Deleting work item: ${workItem.name}")
+                repo.deleteWorkItem(workItem)
+                refreshData()
+            } catch (e: Exception) {
+                Log.e("ProjectDetailViewModel", "Error deleting work item: ${e.message}")
+            }
         }
     }
 }

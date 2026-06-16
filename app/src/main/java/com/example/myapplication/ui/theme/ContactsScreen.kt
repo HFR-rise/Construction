@@ -1,6 +1,5 @@
 package com.example.myapplication.ui.theme
 
-
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -30,10 +29,13 @@ import com.example.myapplication.data.models.ContactMethod
 import com.example.myapplication.viewmodels.ContactsViewModel
 import java.util.regex.Pattern
 import com.example.myapplication.viewmodels.SearchFilter
+import com.google.accompanist.swiperefresh.SwipeRefresh
+import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
+
+// ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
 fun validateRussianPhone(phone: String): Boolean {
     val digitsOnly = phone.replace(Regex("\\D"), "")
-
     return when {
         digitsOnly.length == 11 && (digitsOnly.startsWith("7") || digitsOnly.startsWith("8")) -> true
         digitsOnly.length == 10 -> true
@@ -41,12 +43,9 @@ fun validateRussianPhone(phone: String): Boolean {
     }
 }
 
-
 fun formatRussianPhone(input: String): String {
     val digits = input.replace(Regex("\\D"), "")
-
     val limitedDigits = digits.take(11)
-
     return when {
         limitedDigits.startsWith("7") && limitedDigits.length > 1 -> {
             when (limitedDigits.length) {
@@ -118,7 +117,6 @@ enum class ContactMethodType(
     )
 }
 
-
 @Composable
 fun getFilterIcon(filter: SearchFilter): androidx.compose.ui.graphics.vector.ImageVector {
     return when (filter) {
@@ -144,18 +142,22 @@ fun getFilterDisplayName(filter: SearchFilter): String {
     }
 }
 
+// ==================== ОСНОВНОЙ ЭКРАН ====================
+// ==================== ОСНОВНОЙ ЭКРАН ====================
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ContactsScreen(
     navController: NavController,
     viewModel: ContactsViewModel = hiltViewModel()
-    ) {
+) {
     val filteredContacts by viewModel.filteredContacts.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val editingContact by viewModel.editingContact.collectAsState()
     val showAddDialog by viewModel.showAddDialog.collectAsState()
     val currentFilter by viewModel.currentFilter.collectAsState()
     val duplicatesVersion by viewModel.duplicatesVersion.collectAsState()
+    val isRefreshing by viewModel.isRefreshing.collectAsState()
 
     var isSearchActive by remember { mutableStateOf(false) }
     var selectedContactForDetails by remember { mutableStateOf<Contact?>(null) }
@@ -164,194 +166,226 @@ fun ContactsScreen(
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var contactToDelete by remember { mutableStateOf<Contact?>(null) }
 
-    Scaffold(
-    floatingActionButton = {
-        FloatingActionButton(
-            onClick = { viewModel.showAddDialog() },
-            containerColor = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(bottom = 16.dp)
-        ) {
-            Icon(Icons.Default.Add, contentDescription = "Добавить контакт")
+    // Состояния для хранения методов контакта
+    var contactDetailsMethods by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
+    var editDialogMethods by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
+
+    // Загружаем методы для выбранного контакта
+    LaunchedEffect(selectedContactForDetails) {
+        if (selectedContactForDetails != null) {
+            viewModel.getContactMethods(selectedContactForDetails!!.id).collect { methods ->
+                contactDetailsMethods = methods
+            }
         }
-    },
-    topBar = {
-        TopAppBar(
-            title = {
-                if (isSearchActive) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(
-                            onClick = { showFilterMenu = true }
-                        ) {
-                            Icon(
-                                getFilterIcon(currentFilter),
-                                contentDescription = "Фильтр",
-                                tint = Color.White
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        TextField(
-                            value = searchQuery,
-                            onValueChange = { viewModel.updateSearchQuery(it) },
-                            modifier = Modifier.weight(1f),
-                            placeholder = { Text(getFilterDisplayName(currentFilter)) },
-                            singleLine = true,
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = MaterialTheme.colorScheme.surface,
-                                unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                                focusedTextColor = Color.Black,
-                                unfocusedTextColor = Color.Black
-                            )
-                        )
-
-                        IconButton(onClick = {
-                            isSearchActive = false
-                            viewModel.clearSearch()
-                        }) {
-                            Icon(Icons.Default.Close, contentDescription = "Закрыть", tint = Color.White)
-                        }
-                    }
-                } else {
-                    Text(
-                        "Контакты",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp
-                    )
-                }
-            },
-            navigationIcon = {},
-            actions = {
-                if (!isSearchActive) {
-                    IconButton(onClick = { isSearchActive = true }) {
-                        Icon(Icons.Default.Search, contentDescription = "Поиск")
-                    }
-                }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = Color.Black,
-                titleContentColor = Color.White,
-                actionIconContentColor = Color.White
-            )
-        )
-
     }
+
+    // Загружаем методы для редактируемого контакта
+    LaunchedEffect(editingContact) {
+        if (editingContact != null) {
+            viewModel.getContactMethods(editingContact!!.id).collect { methods ->
+                editDialogMethods = methods
+            }
+        } else {
+            editDialogMethods = emptyList()
+        }
+    }
+
+    val swipeRefreshState = rememberSwipeRefreshState(isRefreshing)
+
+    Scaffold(
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { viewModel.showAddDialog() },
+                containerColor = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 16.dp)
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Добавить контакт")
+            }
+        },
+        topBar = {
+            TopAppBar(
+                title = {
+                    if (isSearchActive) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton(
+                                onClick = { showFilterMenu = true }
+                            ) {
+                                Icon(
+                                    getFilterIcon(currentFilter),
+                                    contentDescription = "Фильтр",
+                                    tint = Color.White
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            TextField(
+                                value = searchQuery,
+                                onValueChange = { viewModel.updateSearchQuery(it) },
+                                modifier = Modifier.weight(1f),
+                                placeholder = { Text(getFilterDisplayName(currentFilter)) },
+                                singleLine = true,
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                    focusedTextColor = Color.Black,
+                                    unfocusedTextColor = Color.Black
+                                )
+                            )
+
+                            IconButton(onClick = {
+                                isSearchActive = false
+                                viewModel.clearSearch()
+                            }) {
+                                Icon(Icons.Default.Close, contentDescription = "Закрыть", tint = Color.White)
+                            }
+                        }
+                    } else {
+                        Text(
+                            "Контакты",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp
+                        )
+                    }
+                },
+                navigationIcon = {},
+                actions = {
+                    if (!isSearchActive) {
+                        IconButton(onClick = { isSearchActive = true }) {
+                            Icon(Icons.Default.Search, contentDescription = "Поиск")
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Black,
+                    titleContentColor = Color.White,
+                    actionIconContentColor = Color.White
+                )
+            )
+        }
     ) { paddingValues ->
-        Column(
+        SwipeRefresh(
+            state = swipeRefreshState,
+            onRefresh = { viewModel.refreshData() },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            GradientDivider()
-
-            Box(
+            Column(
                 modifier = Modifier.fillMaxSize()
             ) {
-                LazyColumn(
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                GradientDivider()
+
+                Box(
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    items(
-                        items = filteredContacts,
-                        key = { contact -> "${contact.id}_${duplicatesVersion}" }
-                    ) { contact ->
-                        val hasDuplicate = viewModel.hasDuplicates(contact.id)
-                        val duplicateIds = viewModel.getDuplicateContacts(contact.id)
+                    LazyColumn(
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        items(
+                            items = filteredContacts,
+                            key = { contact -> "${contact.id}_${duplicatesVersion}" }
+                        ) { contact ->
+                            val hasDuplicate = viewModel.hasDuplicates(contact.id)
+                            val duplicateIds = viewModel.getDuplicateContacts(contact.id)
 
-                        ContactCard(
-                            contact = contact,
-                            onContactClick = { selectedContactForDetails = contact },
-                            onEdit = { viewModel.startEditing(contact) },
-                            onDelete = {
-                                contactToDelete = contact
-                                showDeleteConfirmation = true
+                            ContactCard(
+                                contact = contact,
+                                onContactClick = { selectedContactForDetails = contact },
+                                onEdit = { viewModel.startEditing(contact) },
+                                onDelete = {
+                                    contactToDelete = contact
+                                    showDeleteConfirmation = true
+                                },
+                                onDuplicateClick = {
+                                    duplicateIds.firstOrNull()?.let { duplicateId ->
+                                        val duplicateContact = viewModel.contacts.value.find { it.id == duplicateId }
+                                        duplicateContact?.let { selectedContactForDetails = it }
+                                    }
+                                },
+                                hasDuplicate = hasDuplicate
+                            )
+                        }
+
+                        if (filteredContacts.isEmpty() && searchQuery.isNotBlank()) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(32.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            Icons.Default.SearchOff,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(64.dp),
+                                            tint = Color.Gray
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            text = "Ничего не найдено",
+                                            color = Color.Gray
+                                        )
+                                        Text(
+                                            text = "По запросу \"$searchQuery\"",
+                                            fontSize = 12.sp,
+                                            color = Color.Gray
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (showDeleteConfirmation && contactToDelete != null) {
+                        AlertDialog(
+                            onDismissRequest = {
+                                showDeleteConfirmation = false
+                                contactToDelete = null
                             },
-                            onDuplicateClick = {
-                                duplicateIds.firstOrNull()?.let { duplicateId ->
-                                    val duplicateContact = viewModel.contacts.value.find { it.id == duplicateId }
-                                    duplicateContact?.let { selectedContactForDetails = it }
+                            title = { Text("Удалить контакт") },
+                            text = {
+                                Text("Вы уверены, что хотите удалить контакт \"${contactToDelete!!.name}\"?")
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        contactToDelete?.let { contact ->
+                                            viewModel.deleteContact(contact)
+                                        }
+                                        showDeleteConfirmation = false
+                                        contactToDelete = null
+                                    }
+                                ) {
+                                    Text("Удалить", color = Color.Red)
                                 }
                             },
-                            hasDuplicate = hasDuplicate
+                            dismissButton = {
+                                TextButton(
+                                    onClick = {
+                                        showDeleteConfirmation = false
+                                        contactToDelete = null
+                                    }
+                                ) {
+                                    Text("Отмена")
+                                }
+                            }
                         )
                     }
-
-                    if (filteredContacts.isEmpty() && searchQuery.isNotBlank()) {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(32.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(
-                                        Icons.Default.SearchOff,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(64.dp),
-                                        tint = Color.Gray
-                                    )
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        text = "Ничего не найдено",
-                                        color = Color.Gray
-                                    )
-                                    Text(
-                                        text = "По запросу \"$searchQuery\"",
-                                        fontSize = 12.sp,
-                                        color = Color.Gray
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (showDeleteConfirmation && contactToDelete != null) {
-                    AlertDialog(
-                        onDismissRequest = {
-                            showDeleteConfirmation = false
-                            contactToDelete = null
-                        },
-                        title = { Text("Удалить контакт") },
-                        text = {
-                            Text("Вы уверены, что хотите удалить контакт \"${contactToDelete!!.name}\"?")
-                        },
-                        confirmButton = {
-                            TextButton(
-                                onClick = {
-                                    contactToDelete?.let { contact ->
-                                        viewModel.deleteContact(contact)
-                                    }
-                                    showDeleteConfirmation = false
-                                    contactToDelete = null
-                                }
-                            ) {
-                                Text("Удалить", color = Color.Red)
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(
-                                onClick = {
-                                    showDeleteConfirmation = false
-                                    contactToDelete = null
-                                }
-                            ) {
-                                Text("Отмена")
-                            }
-                        }
-                    )
                 }
             }
         }
     }
 
+    // Диалог выбора фильтра (остаётся без изменений)
     if (showFilterMenu) {
         AlertDialog(
             onDismissRequest = { showFilterMenu = false },
@@ -406,42 +440,40 @@ fun ContactsScreen(
         )
     }
 
+    // Диалог информации о контакте (ИСПРАВЛЕНО)
     if (selectedContactForDetails != null) {
         ContactDetailsDialog(
             contact = selectedContactForDetails!!,
-            methods = viewModel.getMethodsForContact(selectedContactForDetails!!.id)
-                .collectAsState(initial = emptyList()).value,
-            onDismiss = { selectedContactForDetails = null }
+            methods = contactDetailsMethods,
+            onDismiss = {
+                selectedContactForDetails = null
+                contactDetailsMethods = emptyList()
+            }
         )
     }
 
+    // Диалог добавления/редактирования контакта (ИСПРАВЛЕНО)
     if (showAddDialog || editingContact != null) {
-        val contactToEdit = editingContact
-
         ContactEditDialog(
-            contact = contactToEdit,
-            methods = if (contactToEdit != null) {
-                viewModel.getMethodsForContact(contactToEdit.id)
-                    .collectAsState(initial = emptyList()).value
-            } else emptyList(),
+            contact = editingContact,
+            methods = editDialogMethods,
             onDismiss = {
                 viewModel.hideAddDialog()
                 viewModel.clearEditing()
+                editDialogMethods = emptyList()
             },
             onSave = { name, description, addedMethods, updatedMethods, deletedMethods ->
-                if (contactToEdit == null) {
+                if (editingContact == null) {
                     viewModel.addContactWithMethods(name, description, addedMethods)
                 } else {
-                    val updatedContact = Contact(
-                        id = contactToEdit.id,
+                    val updatedContact = editingContact!!.copy(
                         name = name,
-                        description = description,
-                        createdAt = contactToEdit.createdAt
+                        description = description
                     )
                     viewModel.updateContact(updatedContact)
 
                     addedMethods.forEach { method ->
-                        viewModel.addContactMethod(contactToEdit.id, method.methodType, method.value)
+                        viewModel.addContactMethod(editingContact!!.id, method.methodType, method.value)
                     }
                     updatedMethods.forEach { method ->
                         viewModel.updateContactMethod(method)
@@ -454,7 +486,7 @@ fun ContactsScreen(
         )
     }
 }
-
+// ==================== КОМПОНЕНТЫ ====================
 
 @Composable
 fun FilterOptionItem(
@@ -507,61 +539,60 @@ fun ContactCard(
     hasDuplicate: Boolean
 ) {
     Card(
-    modifier = Modifier
-    .fillMaxWidth()
-    .clickable { onContactClick() },
-    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(16.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .clickable { onContactClick() },
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = contact.name,
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp
-            )
-            if (contact.description.isNotBlank()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = contact.description,
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    text = contact.name,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
                 )
-            }
-        }
-        Row {
-            // предупреждение (если есть дубликаты)
-            if (hasDuplicate) {
-                IconButton(onClick = onDuplicateClick) {
-                    Icon(
-                        Icons.Default.Warning,
-                        contentDescription = "Есть дубликаты",
-                        tint = Color.Red,
-                        modifier = Modifier.size(24.dp)
+                if (contact.description.isNotBlank()) {
+                    Text(
+                        text = contact.description,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
                 }
             }
-            IconButton(onClick = onEdit) {
-                Icon(
-                    Icons.Default.Edit,
-                    contentDescription = "Редактировать",
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            }
-            IconButton(onClick = onDelete) {
-                Icon(
-                    Icons.Default.Delete,
-                    contentDescription = "Удалить",
-                    tint = MaterialTheme.colorScheme.error
-                )
+            Row {
+                if (hasDuplicate) {
+                    IconButton(onClick = onDuplicateClick) {
+                        Icon(
+                            Icons.Default.Warning,
+                            contentDescription = "Есть дубликаты",
+                            tint = Color.Red,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+                IconButton(onClick = onEdit) {
+                    Icon(
+                        Icons.Default.Edit,
+                        contentDescription = "Редактировать",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Удалить",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
             }
         }
     }
-}
 }
 
 @Composable
@@ -733,6 +764,8 @@ fun getIconForMethod(methodType: String): Any {
         else -> Icons.Default.Link
     }
 }
+
+// ==================== ДИАЛОГИ РЕДАКТИРОВАНИЯ ====================
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1035,6 +1068,7 @@ fun MethodDialog(
             }
         )
     }
+
     // Для контроля позиции курсора
     var phoneTextFieldValue by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(phoneValue)) }
     var telegramTextFieldValue by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(telegramValue)) }
@@ -1050,7 +1084,6 @@ fun MethodDialog(
         ContactMethodType.CUSTOM -> customTextFieldValue
     }
 
-    // Функция обновления значения
     fun updateCurrentValue(newValue: String, newTextFieldValue: androidx.compose.ui.text.input.TextFieldValue) {
         when (selectedType) {
             ContactMethodType.PHONE -> {
@@ -1160,7 +1193,6 @@ fun MethodDialog(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Тип связи", fontWeight = FontWeight.Medium)
 
-                // Иконки типов связи
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1210,7 +1242,6 @@ fun MethodDialog(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // кнопка "Иное"
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1254,7 +1285,6 @@ fun MethodDialog(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Для "Иное" показываем дополнительное поле
                 if (selectedType == ContactMethodType.CUSTOM) {
                     OutlinedTextField(
                         value = customTypeName,
@@ -1266,9 +1296,8 @@ fun MethodDialog(
                     )
                 }
 
-                // Поле ввода значения
                 OutlinedTextField(
-                    value = currentTextFieldValue ?: androidx.compose.ui.text.input.TextFieldValue(""),
+                    value = currentTextFieldValue,
                     onValueChange = { newValue ->
                         val newText = newValue.text
                         val cursorPos = newValue.selection.start

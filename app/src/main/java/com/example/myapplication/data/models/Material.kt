@@ -27,7 +27,8 @@ data class Material(
     val unit: String = "шт",
     val unitPrice: Double = 0.0,
     val category: String = "",
-    val notes: String = ""
+    val notes: String = "",
+    val userId: String = ""
 ) {
     // Стоимость материалов
     val totalPrice: Double

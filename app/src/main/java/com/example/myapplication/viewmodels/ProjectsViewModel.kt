@@ -5,12 +5,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.myapplication.data.models.Contact
+import com.example.myapplication.network.ApiService
 import com.example.myapplication.data.models.Material
 import com.example.myapplication.data.models.Project
+import com.example.myapplication.data.models.ObjectModel
 import com.example.myapplication.data.models.WorkItem
 import com.example.myapplication.data.repository.ObjectRepository
 import com.example.myapplication.data.repository.ProjectRepository
+import com.example.myapplication.services.SyncManager
 import com.example.myapplication.utils.FuzzySearch
+import com.example.myapplication.utils.UserPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -28,7 +32,10 @@ enum class ProjectFilterType {
 @HiltViewModel
 class ProjectsViewModel @Inject constructor(
     private val repository: ProjectRepository,
-    private val objectRepository: ObjectRepository
+    private val objectRepository: ObjectRepository,
+    val syncManager: SyncManager,           // ← ДОБАВЛЕНО
+    private val userPreferences: UserPreferences,   // ← ДОБАВЛЕНО
+    private val apiService: ApiService
 ) : ViewModel() {
 
     // ==================== ПЕРЕМЕННЫЕ СОСТОЯНИЯ ====================
@@ -133,14 +140,40 @@ class ProjectsViewModel @Inject constructor(
     }
 
     // ==================== ЗАГРУЗКА ДАННЫХ ====================
+    // ИЗМЕНЕНО: теперь синхронизирует с сервером
 
     fun loadProjects() {
         viewModelScope.launch {
-            repository.getAllProjects().collect { list ->
-                Log.d("ProjectsViewModel", "Loaded ${list.size} projects")
-                _projects.value = list
+            _isLoading.value = true
+            Log.d("ProjectsViewModel", "loadProjects started")
+
+            val userId = userPreferences.getUserId()
+            if (userId == null) {
+                Log.e("ProjectsViewModel", "User not logged in")
+                _isLoading.value = false
+                return@launch
+            }
+
+            try {
+                // Загружаем из Room (локально) с фильтрацией по userId
+                repository.getProjectsForUser(userId).collect { projects ->
+                    // !!! Дополнительная фильтрация для безопасности !!!
+                    val filteredProjects = projects.filter { it.userId == userId || it.userId.isNullOrEmpty() }
+                    _projects.value = filteredProjects
+                    Log.d("ProjectsViewModel", "Loaded ${filteredProjects.size} projects from Room")
+                    _isLoading.value = false
+                }
+            } catch (e: Exception) {
+                Log.e("ProjectsViewModel", "Error loading projects: ${e.message}")
                 _isLoading.value = false
             }
+        }
+    }
+
+    private suspend fun loadProjectsFromRoom(userId: String) {
+        repository.getProjectsForUser(userId).collect { projects ->
+            _projects.value = projects
+            Log.d("ProjectsViewModel", "Loaded ${projects.size} projects from Room")
         }
     }
 
@@ -152,6 +185,7 @@ class ProjectsViewModel @Inject constructor(
             }
         }
     }
+
     suspend fun hasAnyContacts(): Boolean {
         return try {
             repository.getContactsCount() > 0
@@ -167,9 +201,40 @@ class ProjectsViewModel @Inject constructor(
     }
 
     private suspend fun getRootObjectId(): String {
+        // Сначала пробуем получить из Room
         val rootObjects = objectRepository.getRootObjects().first()
-        return rootObjects.find { it.name == "Без объекта" }?.id
-            ?: throw IllegalStateException("Root object not found")
+        val rootObject = rootObjects.find { it.name == "Без объекта" }
+
+        if (rootObject != null) {
+            return rootObject.id
+        }
+
+        // Если в Room нет, пробуем получить с сервера
+        val userId = userPreferences.getUserId()
+        if (userId != null) {
+            try {
+                val response = apiService.getRootObjects(userId)
+                if (response.isSuccessful) {
+                    val serverObjects = response.body() ?: emptyList()
+                    val serverRootObject = serverObjects.find { it.name == "Без объекта" }
+                    if (serverRootObject != null) {
+                        // Сохраняем в Room
+                        objectRepository.insertObject(serverRootObject)
+                        return serverRootObject.id
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ProjectsViewModel", "Error getting root objects from server: ${e.message}")
+            }
+        }
+
+        // Если всё равно нет - создаём новый
+        val newRootObject = ObjectModel(
+            name = "Без объекта",
+            description = "Корневые сметы"
+        )
+        objectRepository.insertObject(newRootObject)
+        return newRootObject.id
     }
 
     private fun updateDuplicatesCache() {
@@ -228,13 +293,7 @@ class ProjectsViewModel @Inject constructor(
     }
 
     // ==================== СОЗДАНИЕ ПРОЕКТА ====================
-
-//    fun createProject(name: String, description: String) {
-//        viewModelScope.launch {
-//            repository.createProject(name, description)
-//            showCreateDialog.value = false
-//        }
-//    }
+    // ИЗМЕНЕНО: теперь синхронизирует с сервером
 
     fun createProjectAndAttachToObject(
         name: String,
@@ -257,15 +316,27 @@ class ProjectsViewModel @Inject constructor(
                 includeForeman = includeForeman,
                 includeManager = includeManager
             )
+
+            // Сохраняем в Room
             val createdProject = repository.createProject(project)
+
+            // Отправляем на сервер (с очередью при офлайне)
+            val userId = userPreferences.getUserId()
+            if (userId != null) {
+                syncManager.syncProjectToServer(createdProject, userId)
+            }
+
             showCreateDialog.value = false
+            loadProjects()
         }
     }
+
+// ProjectsViewModel.kt - исправленный метод
 
     fun createProjectWithMaterialsAndWorks(
         name: String,
         description: String,
-        objectId: String?,
+        objectId: String?,  // ← теперь может быть null
         materials: List<Material>,
         workItems: List<WorkItem>,
         customerContactId: String?,
@@ -276,24 +347,42 @@ class ProjectsViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             try {
-                val finalObjectId = when (objectId) {
-                    null, "null", "none", "" -> {
-                        getRootObjectId()
-                    }
+                val userId = userPreferences.getUserId()
+                if (userId == null) {
+                    Log.e("ProjectsViewModel", "Cannot create project: userId is null")
+                    showCreateDialog.value = false
+                    return@launch
+                }
+
+                // ===== ИСПРАВЛЕНИЕ: обрабатываем null objectId =====
+                val finalObjectId = when {
+                    objectId == null -> ""
+                    objectId == "null" -> ""
+                    objectId == "none" -> ""
+                    objectId == "root" -> ""
+                    objectId.isEmpty() -> ""
                     else -> objectId
                 }
+
+                Log.d("ProjectsViewModel", "Creating project with objectId: $finalObjectId")
+
                 val project = Project(
                     name = name,
                     description = description,
-                    objectId = finalObjectId,
+                    objectId = finalObjectId,  // ← null для корневых смет
                     customerContactId = customerContactId,
                     foremanContactId = foremanContactId,
                     managerContactId = managerContactId,
                     includeForeman = includeForeman,
-                    includeManager = includeManager
+                    includeManager = includeManager,
+                    userId = userId
                 )
-                val createdProject = repository.createProject(project)
 
+                // Сохраняем в Room
+                val createdProject = repository.createProject(project)
+                Log.d("ProjectsViewModel", "Project saved to Room with objectId: ${createdProject.objectId}")
+
+                // Сохраняем материалы и работы
                 materials.forEach { material ->
                     repository.addMaterial(
                         Material(
@@ -318,31 +407,58 @@ class ProjectsViewModel @Inject constructor(
                     )
                 }
 
+                // Отправляем на сервер
+                syncManager.syncProjectToServer(createdProject, userId)
+
                 loadProjects()
                 showCreateDialog.value = false
 
                 Log.d("ProjectsViewModel", "Project created successfully: ${createdProject.name}")
             } catch (e: Exception) {
-                Log.e("ProjectsViewModel", "Error creating project: ${e.message}")
+                Log.e("ProjectsViewModel", "Error creating project: ${e.message}", e)
+                showCreateDialog.value = false
             }
         }
     }
 
     // ==================== УДАЛЕНИЕ ПРОЕКТА ====================
+    // ИЗМЕНЕНО: синхронизирует удаление с сервером
 
     fun deleteProject(project: Project) {
         viewModelScope.launch {
+            // Удаляем из Room
             repository.deleteProject(project)
+
+            // Отправляем запрос на сервер
+            val userId = userPreferences.getUserId()
+            if (userId != null && syncManager.hasInternetConnection()) {
+                try {
+                    val apiService = (repository as? com.example.myapplication.network.ApiService) // Нужно добавить ApiService в конструктор
+                    // или используем syncManager
+                    syncManager.syncProjectDeletion(project.id, userId)
+                } catch (e: Exception) {
+                    Log.e("ProjectsViewModel", "Error deleting project from server: ${e.message}")
+                    // Добавляем в очередь
+                    syncManager.queueOperation(
+                        type = "DELETE",
+                        entityType = "PROJECT",
+                        entityId = project.id,
+                        data = project
+                    )
+                }
+            }
+
+            loadProjects()
         }
     }
 
-    // Получить смету по ID
+    // ==================== ПОЛУЧЕНИЕ ДАННЫХ ====================
+
     suspend fun getProjectById(projectId: String): Project? {
         isLoading.first { !it }
         return _projects.value.find { it.id == projectId }
     }
 
-    // Получить материалы для сметы
     suspend fun getMaterialsForProject(projectId: String): List<Material> {
         return try {
             repository.getMaterials(projectId).first()
@@ -352,7 +468,6 @@ class ProjectsViewModel @Inject constructor(
         }
     }
 
-    // Получить работы для сметы
     suspend fun getWorkItemsForProject(projectId: String): List<WorkItem> {
         return try {
             repository.getWorkItems(projectId).first()
@@ -362,7 +477,10 @@ class ProjectsViewModel @Inject constructor(
         }
     }
 
-    // Обновить проект
+    // ==================== ОБНОВЛЕНИЕ ПРОЕКТА ====================
+    // ИЗМЕНЕНО: синхронизирует обновление с сервером
+
+
     fun updateProject(
         projectId: String,
         name: String,
@@ -377,8 +495,17 @@ class ProjectsViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             try {
-                val oldProject = getProjectById(projectId) ?: return@launch
+                Log.d("ProjectsViewModel", "Updating project: $projectId")
+                Log.d("ProjectsViewModel", "Materials to save: ${materials.size}")
+                Log.d("ProjectsViewModel", "Work items to save: ${workItems.size}")
 
+                val oldProject = getProjectById(projectId)
+                if (oldProject == null) {
+                    Log.e("ProjectsViewModel", "Project not found: $projectId")
+                    return@launch
+                }
+
+                // 1. Обновляем основные данные проекта
                 val updatedProject = oldProject.copy(
                     name = name,
                     description = description,
@@ -389,40 +516,88 @@ class ProjectsViewModel @Inject constructor(
                     includeManager = includeManager,
                     updatedAt = Date()
                 )
-                repository.updateProject(updatedProject)
 
-                val oldMaterials = getMaterialsForProject(projectId)
+                // ✅ СОХРАНЯЕМ ПРОЕКТ В ROOM
+                repository.updateProject(updatedProject)
+                Log.d("ProjectsViewModel", "✅ Project updated in Room")
+
+                // 2. Удаляем старые материалы
+                val oldMaterials = repository.getMaterialsOnce(projectId)
+                Log.d("ProjectsViewModel", "Old materials count: ${oldMaterials.size}")
                 oldMaterials.forEach { material ->
                     repository.deleteMaterial(material)
-                }
-                materials.forEach { material ->
-                    repository.addMaterial(material.copy(projectId = projectId))
+                    Log.d("ProjectsViewModel", "Deleted material: ${material.name}")
                 }
 
-                val oldWorkItems = getWorkItemsForProject(projectId)
+                // 3. Добавляем новые материалы
+                materials.forEach { material ->
+                    val newMaterial = material.copy(projectId = projectId)
+                    repository.addMaterial(newMaterial)
+                    Log.d("ProjectsViewModel", "Added material: ${newMaterial.name}")
+                }
+
+                // 4. Удаляем старые работы
+                val oldWorkItems = repository.getWorkItemsOnce(projectId)
+                Log.d("ProjectsViewModel", "Old work items count: ${oldWorkItems.size}")
                 oldWorkItems.forEach { work ->
                     repository.deleteWorkItem(work)
-                }
-                workItems.forEach { work ->
-                    repository.addWorkItem(work.copy(projectId = projectId))
+                    Log.d("ProjectsViewModel", "Deleted work item: ${work.name}")
                 }
 
+                // 5. Добавляем новые работы
+                workItems.forEach { work ->
+                    val newWork = work.copy(projectId = projectId)
+                    repository.addWorkItem(newWork)
+                    Log.d("ProjectsViewModel", "Added work item: ${newWork.name}")
+                }
+
+                // 6. Пересчитываем бюджет
                 val totalMaterialCost = materials.sumOf { it.quantity * it.unitPrice }
                 val totalWorkCost = workItems.sumOf { it.laborHours * it.hourlyRate + it.materialCost }
                 val totalBudget = totalMaterialCost + totalWorkCost
+                Log.d("ProjectsViewModel", "Total budget: $totalBudget")
 
                 val finalProject = updatedProject.copy(
                     totalBudget = totalBudget,
                     updatedAt = Date()
                 )
-                repository.updateProject(finalProject)
 
+                // ✅ СОХРАНЯЕМ ФИНАЛЬНЫЙ ПРОЕКТ С БЮДЖЕТОМ
+                repository.updateProject(finalProject)
+                Log.d("ProjectsViewModel", "✅ Final project saved with budget: $totalBudget")
+
+                // 7. Проверяем, что данные сохранились
+                val verifyMaterials = repository.getMaterialsOnce(projectId)
+                val verifyWorkItems = repository.getWorkItemsOnce(projectId)
+                Log.d("ProjectsViewModel", "✅ Verified: ${verifyMaterials.size} materials, ${verifyWorkItems.size} work items")
+
+                // 8. Отправляем на сервер
+                val userId = userPreferences.getUserId()
+                if (userId != null) {
+                    syncManager.syncProjectToServer(finalProject, userId)
+                }
+
+                // 9. Перезагружаем список проектов
                 loadProjects()
 
-                Log.d("ProjectsViewModel", "Project updated successfully")
+                Log.d("ProjectsViewModel", "✅ Project update completed successfully")
+
             } catch (e: Exception) {
-                Log.e("ProjectsViewModel", "Error updating project", e)
+                Log.e("ProjectsViewModel", "Error updating project: ${e.message}", e)
             }
+        }
+    }
+
+    // ==================== НОВЫЕ МЕТОДЫ ====================
+
+    // Получить только свои сметы (с сервера)
+    suspend fun loadProjectsFromServer() {
+        val userId = userPreferences.getUserId() ?: return
+        if (syncManager.hasInternetConnection()) {
+            // Принудительно синхронизируем проекты с сервера
+            syncManager.syncDataFromServer(userId)
+            // Перезагружаем проекты из Room
+            loadProjects()
         }
     }
 }

@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.example.myapplication.data.models.Contact
+import com.example.myapplication.data.models.ContactMethod
 import com.example.myapplication.data.models.ObjectModel
 import com.example.myapplication.data.models.Project
 import com.example.myapplication.viewmodels.ObjectFilterType
@@ -28,6 +29,25 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import android.util.Log
 import java.util.Locale
+import androidx.compose.foundation.shape.RoundedCornerShape
+
+// Accompanist SwipeRefresh импорты
+import com.google.accompanist.swiperefresh.SwipeRefresh
+import com.google.accompanist.swiperefresh.rememberSwipeRefreshState
+
+// Импорты для расшаривания
+import com.example.myapplication.viewmodels.ShareViewModel
+import com.example.myapplication.viewmodels.SharingState
+import com.example.myapplication.viewmodels.ContactsViewModel
+import com.example.myapplication.ui.components.ShareConfirmationDialog
+import com.example.myapplication.ui.components.NoPhoneErrorDialog
+import com.example.myapplication.ui.components.UserNotFoundErrorDialog
+import com.example.myapplication.ui.components.ShareContactSelectorDialog
+import androidx.compose.runtime.derivedStateOf
+import kotlinx.coroutines.launch
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
+import kotlinx.coroutines.flow.first
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,10 +63,15 @@ fun ObjectsScreen(
 ) {
     val filteredObjects by viewModel.filteredObjects.collectAsState()
     val projectsInObject by viewModel.projectsInObject.collectAsState()
+    val rootLevelProjects by viewModel.rootLevelProjects.collectAsState()
+    val showRootProjects by viewModel.showRootProjects.collectAsState()
     val showCreateDialog by viewModel.showCreateDialog.collectAsState()
     val showCreateTypeDialog by viewModel.showCreateTypeDialog.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val currentFilter by viewModel.currentFilter.collectAsState()
+    val isRefreshing by viewModel.isRefreshing.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
+    val currentObjectName by viewModel.currentObjectName.collectAsState()
 
     val showDeleteConfirmation by viewModel.showDeleteConfirmation.collectAsState()
     val objectToDelete by viewModel.objectToDelete.collectAsState()
@@ -57,8 +82,31 @@ fun ObjectsScreen(
     val showDeleteProjectConfirmation by viewModel.showDeleteProjectConfirmation.collectAsState()
     val projectToDelete by viewModel.projectToDelete.collectAsState()
 
+    // ===== НОВЫЕ СОСТОЯНИЯ ДЛЯ РАСШАРИВАНИЯ =====
+    val shareViewModel: ShareViewModel = hiltViewModel()
+    val sharingState by shareViewModel.sharingState.collectAsState()
+    val shareErrorMessage by shareViewModel.errorMessage.collectAsState()
+    val contactsViewModel: ContactsViewModel = hiltViewModel()
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
     var isSearchActive by remember { mutableStateOf(false) }
     var showFilterMenu by remember { mutableStateOf(false) }
+
+    // Состояния для сворачивания секций
+    var showObjectsSection by remember { mutableStateOf(true) }
+
+    // Состояния для расшаривания
+    var showShareContactSelector by remember { mutableStateOf(false) }
+    var selectedProjectForShare by remember { mutableStateOf<Project?>(null) }
+    var selectedContactForShare by remember { mutableStateOf<Contact?>(null) }
+    var showShareConfirmation by remember { mutableStateOf(false) }
+    var showNoPhoneError by remember { mutableStateOf(false) }
+    var showUserNotFoundError by remember { mutableStateOf(false) }
+    var contactMethodsForShare by remember { mutableStateOf<List<ContactMethod>>(emptyList()) }
+
+    // Состояние для SwipeRefresh
+    val swipeRefreshState = rememberSwipeRefreshState(isRefreshing)
 
     // Обновляем parentId в ViewModel при изменении
     LaunchedEffect(parentObjectId) {
@@ -67,10 +115,59 @@ fun ObjectsScreen(
         viewModel.refreshProjects()
     }
 
-    LaunchedEffect(projectsInObject) {
-        Log.d("ObjectsScreen", "Projects in object: ${projectsInObject.size}")
-        projectsInObject.forEach { project ->
-            Log.d("ObjectsScreen", "Project: ${project.name}, objectId: ${project.objectId}")
+    // Обновляем данные при возврате на экран
+    LaunchedEffect(Unit) {
+        viewModel.loadDataFromLocalOnly()
+    }
+
+    // Загружаем методы для выбранного контакта
+    LaunchedEffect(selectedContactForShare) {
+        if (selectedContactForShare != null) {
+            contactsViewModel.getContactMethods(selectedContactForShare!!.id).collect { methods ->
+                contactMethodsForShare = methods
+            }
+        }
+    }
+
+    // Обработка результата расшаривания
+    LaunchedEffect(sharingState) {
+        when (sharingState) {
+            is SharingState.Success -> {
+                // Успешно поделились
+                showShareConfirmation = false
+                showShareContactSelector = false
+                selectedProjectForShare = null
+                selectedContactForShare = null
+
+                Toast.makeText(
+                    context,
+                    "Смета отправлена!",
+                    Toast.LENGTH_SHORT
+                ).show()
+
+                shareViewModel.resetState()
+            }
+            is SharingState.Error -> {
+                val error = (sharingState as SharingState.Error).message
+                when {
+                    error.contains("не найден") -> {
+                        showUserNotFoundError = true
+                    }
+                    error.contains("нет номера") -> {
+                        showNoPhoneError = true
+                    }
+                    else -> {
+                        Toast.makeText(
+                            context,
+                            error,
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+                showShareConfirmation = false
+                shareViewModel.resetState()
+            }
+            else -> {}
         }
     }
 
@@ -85,11 +182,7 @@ fun ObjectsScreen(
             if (!selectionMode) {
                 FloatingActionButton(
                     onClick = {
-                        if (parentObjectId != null) {
-                            viewModel.showCreateTypeDialog()
-                        } else {
-                            viewModel.showCreateDialog()
-                        }
+                        viewModel.showCreateTypeDialog()
                     },
                     containerColor = MaterialTheme.colorScheme.primary
                 ) {
@@ -105,7 +198,6 @@ fun ObjectsScreen(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // Кнопка выбора фильтра
                             IconButton(onClick = { showFilterMenu = true }) {
                                 Icon(
                                     when (currentFilter) {
@@ -151,26 +243,26 @@ fun ObjectsScreen(
                                 Icon(Icons.Default.Close, contentDescription = "Закрыть", tint = Color.White)
                             }
                         }
-                    } else {
-                        if (selectionMode) {
-                            val title = if (parentObjectId != null) {
-                                val currentObject = viewModel.objects.value.find { it.id == parentObjectId }
-                                currentObject?.name ?: "Выберите объект для перемещения"
-                            } else {
-                                "Выберите объект для перемещения"
-                            }
-                            Text(
-                                title,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 20.sp
-                            )
+                    } else if (selectionMode) {
+                        val title = if (parentObjectId != null) {
+                            val currentObject = filteredObjects.find { it.id == parentObjectId }
+                            currentObject?.name ?: "Выберите объект для перемещения"
                         } else {
+                            "Выберите объект для перемещения"
+                        }
+                        Text(
+                            title,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp
+                        )
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Text(
-                                if (parentObjectId != null && viewModel.currentObjectName.value != null) {
-                                    viewModel.currentObjectName.value!!
-                                } else {
-                                    "Объекты"
-                                },
+                                text = if (parentObjectId != null) currentObjectName ?: "Объекты" else "Объекты",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 20.sp
                             )
@@ -211,113 +303,289 @@ fun ObjectsScreen(
             )
         }
     ) { paddingValues ->
-        Column(
+        SwipeRefresh(
+            state = swipeRefreshState,
+            onRefresh = { viewModel.refreshAllData() },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            GradientDivider()
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+            Column(
+                modifier = Modifier.fillMaxSize()
             ) {
-                if (filteredObjects.isNotEmpty()) {
-                    item {
-                        Text("Объекты", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                GradientDivider()
+
+                if (isLoading && !isRefreshing) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
                     }
-                    items(filteredObjects) { obj ->
-                        if (selectionMode) {
-                            SelectableObjectCard(
-                                obj = obj,
-                                onSelect = {
-                                    onObjectSelected?.invoke(obj.id, obj.name)
-                                },
-                                onOpen = {
-                                    Log.d(
-                                        "ObjectsScreen",
-                                        "Object clicked: ${obj.name}, id: ${obj.id}"
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // СЕКЦИЯ 1: ОБЪЕКТЫ
+                        if (filteredObjects.isNotEmpty()) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { showObjectsSection = !showObjectsSection }
+                                        .padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "🏢 Объекты (${filteredObjects.size})",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 18.sp,
+                                        color = MaterialTheme.colorScheme.primary
                                     )
-                                    viewModel.updateParentId(obj.id)
-                                    onObjectOpen?.invoke(obj.id, obj.name)
-                                    viewModel.refreshProjects()
-                                },
-                                onInfo = { viewModel.showInfoDialog(obj) }
-                            )
-                        } else {
-                            ObjectCard(
-                                obj = obj,
-                                onClick = {
-                                    navController.navigate("objects/${obj.id}")
-                                },
-                                onEdit = {
-                                    viewModel.startEditing(obj)
-                                },
-                                onDelete = {
-                                    viewModel.showDeleteConfirmation(obj)
-                                },
-                                onInfo = {
-                                    viewModel.showInfoDialog(obj)
+                                    Icon(
+                                        if (showObjectsSection) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = if (showObjectsSection) "Свернуть" else "Развернуть",
+                                        tint = Color.Gray
+                                    )
                                 }
-                            )
-                        }
-                    }
-                }
+                            }
 
-                if (projectsInObject.isNotEmpty()) {
-                    item {
-                        Text("Сметы", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    }
-                    items(projectsInObject) { project ->
-                        if (selectionMode) {
-                            MoveProjectCardWithInfo(
-                                project = project,
-                                onInfoClick = {
-                                    navController.navigate("view_project/${project.id}")
+                            if (showObjectsSection) {
+                                items(filteredObjects) { obj ->
+                                    if (selectionMode) {
+                                        SelectableObjectCard(
+                                            obj = obj,
+                                            onSelect = { onObjectSelected?.invoke(obj.id, obj.name) },
+                                            onOpen = {
+                                                viewModel.updateParentId(obj.id)
+                                                onObjectOpen?.invoke(obj.id, obj.name)
+                                                viewModel.refreshProjects()
+                                            },
+                                            onInfo = { viewModel.showInfoDialog(obj) }
+                                        )
+                                    } else {
+                                        ObjectCard(
+                                            obj = obj,
+                                            onClick = { navController.navigate("objects/${obj.id}") },
+                                            onEdit = { viewModel.startEditing(obj) },
+                                            onDelete = { viewModel.showDeleteConfirmation(obj) },
+                                            onInfo = { viewModel.showInfoDialog(obj) }
+                                        )
+                                    }
                                 }
-                            )
-                        } else {
-                            ProjectCardInObject(
-                                project = project,
-                                onClick = {
-                                    navController.navigate("view_project/${project.id}")
-                                },
-                                onEdit = {
-                                    navController.navigate("edit_project/${project.id}")
-                                },
-                                onMove = {
-                                    navController.navigate("move_project/${project.id}/${parentObjectId ?: "none"}")
-                                },
-                                onDelete = {
-                                    viewModel.showDeleteProjectConfirmation(project)
-                                }
-                            )
+                            }
                         }
-                    }
-                }
 
-                if (filteredObjects.isEmpty() && projectsInObject.isEmpty() && !selectionMode) {
-                    item {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(32.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(
-                                    Icons.Default.Folder,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(64.dp),
-                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                        // РАЗДЕЛИТЕЛЬ
+                        if (filteredObjects.isNotEmpty() && (projectsInObject.isNotEmpty() || rootLevelProjects.isNotEmpty())) {
+                            item {
+                                Divider(
+                                    modifier = Modifier.padding(vertical = 8.dp),
+                                    color = Color.Gray.copy(alpha = 0.3f),
+                                    thickness = 1.dp
                                 )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                if (searchQuery.isNotBlank()) {
-                                    Text("Ничего не найдено", color = Color.Gray)
+                            }
+                        }
+
+                        // СЕКЦИЯ 2: СМЕТЫ ВНУТРИ ОБЪЕКТА
+                        if (parentObjectId != null && projectsInObject.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "📋 Сметы (${projectsInObject.size})",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp,
+                                    color = Color(0xFFFF9800),
+                                    modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                                )
+                            }
+
+                            items(projectsInObject) { project ->
+                                if (selectionMode) {
+                                    MoveProjectCardWithInfo(
+                                        project = project,
+                                        onInfoClick = { navController.navigate("view_project/${project.id}") }
+                                    )
                                 } else {
-                                    Text("Нет объектов и смет", color = Color.Gray)
+                                    // ===== ОБНОВЛЁННЫЙ ProjectCard с onShare =====
+                                    ProjectCard(
+                                        project = project,
+                                        onClick = { navController.navigate("view_project/${project.id}") },
+                                        onShare = {
+                                            selectedProjectForShare = project
+                                            showShareContactSelector = true
+                                        },
+                                        onEdit = { navController.navigate("edit_project/${project.id}") },
+                                        onMove = { navController.navigate("move_project/${project.id}/${parentObjectId}") },
+                                        onDelete = { viewModel.showDeleteProjectConfirmation(project) }
+                                    )
                                 }
+                            }
+                        }
+
+                        // СЕКЦИЯ 3: СМЕТЫ НА КОРНЕВОМ УРОВНЕ
+                        if (!selectionMode && parentObjectId == null && rootLevelProjects.isNotEmpty()) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { viewModel.toggleRootProjectsSection() }
+                                        .padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "📋 Сметы (${rootLevelProjects.size})",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 18.sp,
+                                        color = Color(0xFFFF9800)
+                                    )
+                                    Icon(
+                                        if (showRootProjects) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                        contentDescription = if (showRootProjects) "Свернуть" else "Развернуть",
+                                        tint = Color.Gray
+                                    )
+                                }
+                            }
+
+                            if (showRootProjects) {
+                                items(rootLevelProjects) { project ->
+                                    ProjectCard(
+                                        project = project,
+                                        onClick = { navController.navigate("view_project/${project.id}") },
+                                        onShare = {
+                                            // Открываем диалог выбора контакта для расшаривания
+                                            selectedProjectForShare = project
+                                            showShareContactSelector = true
+                                        },
+                                        onEdit = { navController.navigate("edit_project/${project.id}") },
+                                        onMove = { navController.navigate("move_project/${project.id}/none") },
+                                        onDelete = { viewModel.showDeleteProjectConfirmation(project) }
+                                    )
+                                }
+                            }
+                        }
+
+                        // ПУСТОЕ СОСТОЯНИЕ
+                        if (!selectionMode &&
+                            filteredObjects.isEmpty() &&
+                            projectsInObject.isEmpty() &&
+                            rootLevelProjects.isEmpty() &&
+                            searchQuery.isBlank()) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(32.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            Icons.Default.Folder,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(64.dp),
+                                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                        )
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                        Text(
+                                            text = "Нет объектов и смет",
+                                            fontSize = 16.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            text = "чтобы создать объект или смету",
+                                            fontSize = 13.sp,
+                                            color = Color.Gray
+                                        )
+                                        Text(
+                                            text = "нажмите +",
+                                            fontSize = 13.sp,
+                                            color = Color.Gray
+                                        )
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                    }
+                                }
+                            }
+                        }
+
+                        // СОСТОЯНИЕ ПОИСКА
+                        if (searchQuery.isNotBlank() &&
+                            filteredObjects.isEmpty() &&
+                            projectsInObject.isEmpty() &&
+                            rootLevelProjects.isEmpty()) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(32.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            Icons.Default.SearchOff,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(64.dp),
+                                            tint = Color.Gray
+                                        )
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                        Text(
+                                            text = "Ничего не найдено",
+                                            fontSize = 16.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color.Gray
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            text = "По запросу \"$searchQuery\"",
+                                            fontSize = 13.sp,
+                                            color = Color.Gray
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // ===== КНОПКА "НЕ ДОБАВЛЯТЬ В ОБЪЕКТ" =====
+                        if (selectionMode && parentObjectId == null) {
+                            item {
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Button(
+                                    onClick = {
+                                        onObjectSelected?.invoke("root", "Главный экран")
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(56.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFFFF9800),
+                                        contentColor = Color.White
+                                    ),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Home,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text(
+                                        text = "🏠 Не добавлять в объект",
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Смета будет отображаться на главном экране",
+                                    fontSize = 12.sp,
+                                    color = Color.Gray,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
                             }
                         }
                     }
@@ -325,7 +593,74 @@ fun ObjectsScreen(
             }
         }
     }
+    if (showShareContactSelector && selectedProjectForShare != null) {
+        ShareContactSelectorDialog(
+            onDismiss = {
+                showShareContactSelector = false
+                selectedProjectForShare = null
+            },
+            onContactSelected = { contact ->
+                selectedContactForShare = contact
+                showShareContactSelector = false
+                showShareConfirmation = true
+            },
+            onNoPhoneError = { contact ->
+                selectedContactForShare = contact
+                showShareContactSelector = false
+                showNoPhoneError = true
+            }
+        )
+    }
+    // ===== ДИАЛОГ ПОДТВЕРЖДЕНИЯ РАСШАРИВАНИЯ =====
+    if (showShareConfirmation && selectedProjectForShare != null && selectedContactForShare != null) {
+        ShareConfirmationDialog(
+            contact = selectedContactForShare!!,
+            projectName = selectedProjectForShare!!.name,
+            onDismiss = {
+                showShareConfirmation = false
+                selectedContactForShare = null
+                showShareContactSelector = true
+            },
+            onConfirm = {
+                shareViewModel.shareProjectWithContact(
+                    projectId = selectedProjectForShare!!.id,
+                    projectName = selectedProjectForShare!!.name,
+                    contact = selectedContactForShare!!,
+                    contactMethods = contactMethodsForShare
+                )
+            }
+        )
+    }
 
+    // ===== ОШИБКА "НЕТ ТЕЛЕФОНА" =====
+    if (showNoPhoneError) {
+        NoPhoneErrorDialog(
+            contactName = selectedContactForShare?.name ?: "контакта",
+            onDismiss = {
+                showNoPhoneError = false
+                selectedContactForShare = null
+                showShareContactSelector = true
+            }
+        )
+    }
+
+    // ===== ОШИБКА "ПОЛЬЗОВАТЕЛЬ НЕ НАЙДЕН" =====
+    if (showUserNotFoundError) {
+        val phoneNumber = contactMethodsForShare
+            .find { it.methodType.contains("телефон", ignoreCase = true) }
+            ?.value ?: "неизвестный номер"
+
+        UserNotFoundErrorDialog(
+            phoneNumber = phoneNumber,
+            onDismiss = {
+                showUserNotFoundError = false
+                selectedContactForShare = null
+                showShareContactSelector = true
+            }
+        )
+    }
+
+    // ===== ДИАЛОГ ФИЛЬТРА =====
     if (showFilterMenu) {
         AlertDialog(
             onDismissRequest = { showFilterMenu = false },
@@ -371,6 +706,7 @@ fun ObjectsScreen(
         )
     }
 
+    // ===== ОСТАЛЬНЫЕ ДИАЛОГИ (без изменений) =====
     if (showCreateTypeDialog && !selectionMode) {
         CreateTypeDialog(
             onDismiss = { viewModel.hideCreateTypeDialog() },
@@ -525,6 +861,10 @@ fun ObjectsScreen(
     }
 }
 
+// НОВАЯ КАРТОЧКА ДЛЯ СМЕТ НА КОРНЕВОМ УРОВНЕ
+
+
+// Остальные функции остаются без изменений
 @Composable
 fun FilterOptionObj(
     title: String,
@@ -566,7 +906,6 @@ fun FilterOptionObj(
         }
     }
 }
-
 
 @Composable
 fun SelectableObjectCard(
@@ -620,8 +959,6 @@ fun SelectableObjectCard(
     }
 }
 
-
-
 @Composable
 fun CreateTypeDialog(
     onDismiss: () -> Unit,
@@ -650,8 +987,6 @@ fun CreateTypeDialog(
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Объект")
                     }
-                    // Показываем кнопку "Смета" только если мы внутри объекта
-
                     Button(
                         onClick = onCreateProject,
                         modifier = Modifier.weight(1f)
@@ -954,62 +1289,6 @@ fun ObjectCard(
     }
 }
 
-@Composable
-fun ProjectCardInObject(
-    project: Project,
-    onClick: () -> Unit,
-    onEdit: () -> Unit,
-    onMove: () -> Unit,
-    onDelete: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() },
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(project.name, fontWeight = FontWeight.Medium)
-                Text(
-                    text = "Расходы: ${String.format(Locale.US, "%.2f", project.totalBudget)} ₽",
-                    fontSize = 12.sp,
-                    color = Color.Gray
-                )
-            }
-            Row {
-                IconButton(onClick = onEdit) {
-                    Icon(
-                        Icons.Default.Edit,
-                        contentDescription = "Редактировать",
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                IconButton(onClick = onMove) {
-                    Icon(
-                        Icons.Default.SwapHoriz,
-                        contentDescription = "Переместить",
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                IconButton(onClick = onDelete) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = "Удалить",
-                        modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.error
-                    )
-                }
-            }
-        }
-    }
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1384,3 +1663,89 @@ fun MoveProjectCardWithInfo(
         }
     }
 }
+//@Composable
+//fun ProjectCard2(
+//    project: Project,
+//    onView: () -> Unit,
+//    onEdit: () -> Unit,
+//    onMove: () -> Unit,
+//    onDelete: () -> Unit
+////) {
+//    Card(
+//        modifier = Modifier
+//            .fillMaxWidth()
+//            .clickable { onView() },
+//        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+//        colors = CardDefaults.cardColors(
+//            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+//        ),
+//        shape = RoundedCornerShape(8.dp)
+//    ) {
+//        Row(
+//            modifier = Modifier
+//                .fillMaxWidth()
+//                .padding(12.dp),
+//            horizontalArrangement = Arrangement.SpaceBetween,
+//            verticalAlignment = Alignment.CenterVertically
+//        ) {
+//            Column(modifier = Modifier.weight(1f)) {
+//                Row(verticalAlignment = Alignment.CenterVertically) {
+//                    Icon(
+//                        Icons.Default.Receipt,
+//                        contentDescription = null,
+//                        modifier = Modifier.size(18.dp),
+//                        tint = Color(0xFFFF9800)
+//                    )
+//                    Spacer(modifier = Modifier.width(8.dp))
+//                    Text(
+//                        text = project.name,
+//                        fontWeight = FontWeight.Medium,
+//                        fontSize = 15.sp
+//                    )
+//                }
+//                if (project.description.isNotBlank()) {
+//                    Spacer(modifier = Modifier.height(4.dp))
+//                    Text(
+//                        text = project.description,
+//                        fontSize = 12.sp,
+//                        color = Color.Gray,
+//                        maxLines = 1
+//                    )
+//                }
+//                Spacer(modifier = Modifier.height(4.dp))
+//                Text(
+//                    text = "💰 Бюджет: ${String.format(Locale.US, "%.2f", project.totalBudget)} ₽",
+//                    fontSize = 12.sp,
+//                    color = MaterialTheme.colorScheme.primary,
+//                    fontWeight = FontWeight.Medium
+//                )
+//            }
+//            Row {
+//                IconButton(onClick = onMove, modifier = Modifier.size(36.dp)) {
+//                    Icon(
+//                        Icons.Default.SwapHoriz,
+//                        contentDescription = "Переместить",
+//                        modifier = Modifier.size(20.dp),
+//                        tint = MaterialTheme.colorScheme.primary
+//                    )
+//                }
+//                IconButton(onClick = onEdit, modifier = Modifier.size(36.dp)) {
+//                    Icon(
+//                        Icons.Default.Edit,
+//                        contentDescription = "Редактировать",
+//                        modifier = Modifier.size(20.dp),
+//                        tint = MaterialTheme.colorScheme.primary
+//                    )
+//                }
+//                IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
+//                    Icon(
+//                        Icons.Default.Delete,
+//                        contentDescription = "Удалить",
+//                        modifier = Modifier.size(20.dp),
+//                        tint = MaterialTheme.colorScheme.error
+//                    )
+//                }
+//            }
+//        }
+//    }
+//}

@@ -3,8 +3,12 @@ package com.example.myapplication.di
 import android.content.Context
 import com.example.myapplication.data.database.*
 import com.example.myapplication.data.models.ObjectModel
+import com.example.myapplication.data.repository.ContactRepository
 import com.example.myapplication.data.repository.ObjectRepository
 import com.example.myapplication.data.repository.ProjectRepository
+import com.example.myapplication.network.ApiService
+import com.example.myapplication.services.SyncManager
+import com.example.myapplication.utils.UserPreferences
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -15,6 +19,12 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    @Provides
+    @Singleton
+    fun provideApplicationContext(@ApplicationContext context: Context): Context {
+        return context
+    }
 
     @Provides
     @Singleton
@@ -61,6 +71,7 @@ object AppModule {
         workItemDao: WorkItemDao,
         contactDao: ContactDao,
         contactMethodDao: ContactMethodDao,
+        apiService: ApiService
 //        transactionDao: TransactionDao
     ): ProjectRepository = ProjectRepository(
         projectDao,
@@ -68,7 +79,28 @@ object AppModule {
         workItemDao,
         contactDao,
         contactMethodDao,
+        apiService
 //        transactionDao
+    )
+
+    @Provides
+    @Singleton
+    fun provideSyncOperationDao(db: AppDatabase): SyncOperationDao = db.syncOperationDao()
+
+    @Provides
+    @Singleton
+    fun provideContactRepository(
+        contactDao: ContactDao,
+        contactMethodDao: ContactMethodDao,
+        apiService: ApiService,
+        syncManager: SyncManager,
+        userPreferences: UserPreferences
+    ): ContactRepository = ContactRepository(
+        contactDao,
+        contactMethodDao,
+        apiService,
+        syncManager,
+        userPreferences
     )
 
     @Provides
@@ -76,10 +108,12 @@ object AppModule {
     fun provideObjectRepository(
         objectDao: ObjectDao,
 //        objectProjectDao: ObjectProjectDao,
-        projectDao: ProjectDao
+        projectDao: ProjectDao,
+        userPreferences: UserPreferences
     ): ObjectRepository = ObjectRepository(
         objectDao,
 //        objectProjectDao,
-        projectDao
+        projectDao,
+        userPreferences
     )
 }

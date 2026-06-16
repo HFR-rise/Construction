@@ -41,6 +41,14 @@ fun ProjectsScreen(
     var isSearchActive by remember { mutableStateOf(false) }
     var showFilterMenu by remember { mutableStateOf(false) }
 
+    LaunchedEffect(Unit) {
+        viewModel.loadProjects()
+        // Если интернет есть, синхронизируем с сервером
+        if (viewModel.syncManager.hasInternetConnection()) {
+            viewModel.loadProjectsFromServer()
+        }
+    }
+
     Scaffold(
         floatingActionButton = {
             FloatingActionButton(
@@ -170,6 +178,7 @@ fun ProjectsScreen(
                                     onClick = {
                                         navController.navigate("view_project/${project.id}")
                                     },
+                                    onShare = {},
                                     onEdit = {
                                         navController.navigate("edit_project/${project.id}")
                                     },
@@ -343,6 +352,7 @@ fun FilterOptionCard(
 fun ProjectCard(
     project: Project,
     onClick: () -> Unit,
+    onShare: () -> Unit,
     onEdit: () -> Unit,
     onMove: () -> Unit,
     onDelete: () -> Unit
@@ -386,6 +396,14 @@ fun ProjectCard(
                 }
 
                 Row {
+                    IconButton(onClick = onShare) {
+                        Icon(
+                            Icons.Default.Share,
+                            contentDescription = "Поделиться",
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     IconButton(onClick = onEdit) {
                         Icon(
                             Icons.Default.Edit,

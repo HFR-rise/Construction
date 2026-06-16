@@ -18,4 +18,19 @@ interface ContactMethodDao {
 
     @Delete
     suspend fun deleteContactMethod(method: ContactMethod)
+
+    @Query("DELETE FROM contact_methods")
+    suspend fun deleteAll()
+
+    @Query("DELETE FROM contact_methods WHERE id = :methodId")
+    suspend fun deleteContactMethodById(methodId: String)
+
+    @Query("SELECT * FROM contact_methods WHERE id = :id")
+    suspend fun getContactMethodById(id: String): ContactMethod?
+
+
+
+//    @Query("DELETE FROM contact_methods WHERE contactId IN (SELECT id FROM contacts WHERE userId = :userId)")
+//    suspend fun deleteAllContactMethodsForUser(userId: String)
+
 }

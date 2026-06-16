@@ -30,7 +30,8 @@ data class WorkItem(
     val materialCost: Double = 0.0,
     val isCompleted: Boolean = false,
     val completedAt: Date? = null,
-    val notes: String = ""
+    val notes: String = "",
+    val userId: String = ""
 ) {
     // Стоимость работы (часы × ставка)
     val laborCost: Double get() = laborHours * hourlyRate
